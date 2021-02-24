@@ -1,5 +1,5 @@
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 from blspy import AugSchemeMPL, G2Element
 import src.server.ws_connection as ws
@@ -10,9 +10,10 @@ from src.consensus.pot_iterations import (
 )
 from src.farmer.farmer import Farmer
 from src.protocols import harvester_protocol, farmer_protocol
-from src.server.outbound_message import Message, NodeType
-from src.types.pool_target import PoolTarget
-from src.types.proof_of_space import ProofOfSpace
+from src.protocols.protocol_message_types import ProtocolMessageTypes
+from src.server.outbound_message import NodeType, make_msg
+from src.types.blockchain_format.pool_target import PoolTarget
+from src.types.blockchain_format.proof_of_space import ProofOfSpace
 from src.util.api_decorators import api_request, peer_required
 from src.util.ints import uint32, uint64
 
@@ -67,6 +68,7 @@ class FarmerAPI:
             self.farmer.number_of_responses[new_proof_of_space.sp_hash] += 1
 
             required_iters: uint64 = calculate_iterations_quality(
+                self.farmer.constants.DIFFICULTY_CONSTANT_FACTOR,
                 computed_quality_string,
                 new_proof_of_space.proof.size,
                 sp.difficulty,
@@ -106,7 +108,7 @@ class FarmerAPI:
             )
             self.farmer.cache_add_time[computed_quality_string] = uint64(int(time.time()))
 
-            return Message("request_signatures", request)
+            return make_msg(ProtocolMessageTypes.request_signatures, request)
 
     @api_request
     async def respond_signatures(self, response: harvester_protocol.RespondSignatures):
@@ -161,17 +163,25 @@ class FarmerAPI:
                     agg_sig_rc_sp = AugSchemeMPL.aggregate([reward_chain_sp_harv_sig, farmer_share_rc_sp])
                     assert AugSchemeMPL.verify(agg_pk, reward_chain_sp, agg_sig_rc_sp)
 
-                    assert pospace.pool_public_key is not None
-                    pool_pk = bytes(pospace.pool_public_key)
-                    if pool_pk not in self.farmer.pool_sks_map:
-                        self.farmer.log.error(
-                            f"Don't have the private key for the pool key used by harvester: {pool_pk.hex()}"
+                    if pospace.pool_public_key is not None:
+                        assert pospace.pool_contract_puzzle_hash is None
+                        pool_pk = bytes(pospace.pool_public_key)
+                        if pool_pk not in self.farmer.pool_sks_map:
+                            self.farmer.log.error(
+                                f"Don't have the private key for the pool key used by harvester: {pool_pk.hex()}"
+                            )
+                            return
+
+                        pool_target: Optional[PoolTarget] = PoolTarget(self.farmer.pool_target, uint32(0))
+                        assert pool_target is not None
+                        pool_target_signature: Optional[G2Element] = AugSchemeMPL.sign(
+                            self.farmer.pool_sks_map[pool_pk], bytes(pool_target)
                         )
-                        return
-                    pool_target: PoolTarget = PoolTarget(self.farmer.pool_target, uint32(0))
-                    pool_target_signature: G2Element = AugSchemeMPL.sign(
-                        self.farmer.pool_sks_map[pool_pk], bytes(pool_target)
-                    )
+                    else:
+                        assert pospace.pool_contract_puzzle_hash is not None
+                        pool_target = None
+                        pool_target_signature = None
+
                     request = farmer_protocol.DeclareProofOfSpace(
                         response.challenge_hash,
                         challenge_chain_sp,
@@ -185,7 +195,7 @@ class FarmerAPI:
                         pool_target_signature,
                     )
                     self.farmer.state_changed("proof", {"proof": request, "passed_filter": True})
-                    msg = Message("declare_proof_of_space", request)
+                    msg = make_msg(ProtocolMessageTypes.declare_proof_of_space, request)
                     await self.farmer.server.send_to_all([msg], NodeType.FULL_NODE)
                     return
 
@@ -193,35 +203,33 @@ class FarmerAPI:
             # This is a response with block signatures
             for sk in self.farmer.get_private_keys():
                 (
-                    foliage_sub_block_hash,
-                    foliage_sub_block_sig_harvester,
+                    foliage_block_data_hash,
+                    foliage_sig_harvester,
                 ) = response.message_signatures[0]
                 (
-                    foliage_block_hash,
-                    foliage_block_sig_harvester,
+                    foliage_transaction_block_hash,
+                    foliage_transaction_block_sig_harvester,
                 ) = response.message_signatures[1]
                 pk = sk.get_g1()
                 if pk == response.farmer_pk:
                     agg_pk = ProofOfSpace.generate_plot_public_key(response.local_pk, pk)
                     assert agg_pk == pospace.plot_public_key
-                    foliage_sub_block_sig_farmer = AugSchemeMPL.sign(sk, foliage_sub_block_hash, agg_pk)
-                    foliage_block_sig_farmer = AugSchemeMPL.sign(sk, foliage_block_hash, agg_pk)
-                    foliage_sub_block_agg_sig = AugSchemeMPL.aggregate(
-                        [foliage_sub_block_sig_harvester, foliage_sub_block_sig_farmer]
-                    )
+                    foliage_sig_farmer = AugSchemeMPL.sign(sk, foliage_block_data_hash, agg_pk)
+                    foliage_transaction_block_sig_farmer = AugSchemeMPL.sign(sk, foliage_transaction_block_hash, agg_pk)
+                    foliage_agg_sig = AugSchemeMPL.aggregate([foliage_sig_harvester, foliage_sig_farmer])
                     foliage_block_agg_sig = AugSchemeMPL.aggregate(
-                        [foliage_block_sig_harvester, foliage_block_sig_farmer]
+                        [foliage_transaction_block_sig_harvester, foliage_transaction_block_sig_farmer]
                     )
-                    assert AugSchemeMPL.verify(agg_pk, foliage_sub_block_hash, foliage_sub_block_agg_sig)
-                    assert AugSchemeMPL.verify(agg_pk, foliage_block_hash, foliage_block_agg_sig)
+                    assert AugSchemeMPL.verify(agg_pk, foliage_block_data_hash, foliage_agg_sig)
+                    assert AugSchemeMPL.verify(agg_pk, foliage_transaction_block_hash, foliage_block_agg_sig)
 
                     request_to_nodes = farmer_protocol.SignedValues(
                         computed_quality_string,
-                        foliage_sub_block_agg_sig,
+                        foliage_agg_sig,
                         foliage_block_agg_sig,
                     )
 
-                    msg = Message("signed_values", request_to_nodes)
+                    msg = make_msg(ProtocolMessageTypes.signed_values, request_to_nodes)
                     await self.farmer.server.send_to_all([msg], NodeType.FULL_NODE)
 
     """
@@ -230,7 +238,7 @@ class FarmerAPI:
 
     @api_request
     async def new_signage_point(self, new_signage_point: farmer_protocol.NewSignagePoint):
-        message = harvester_protocol.NewSignagePoint(
+        message = harvester_protocol.NewSignagePointHarvester(
             new_signage_point.challenge_hash,
             new_signage_point.difficulty,
             new_signage_point.sub_slot_iters,
@@ -238,7 +246,7 @@ class FarmerAPI:
             new_signage_point.challenge_chain_sp,
         )
 
-        msg = Message("new_signage_point", message)
+        msg = make_msg(ProtocolMessageTypes.new_signage_point_harvester, message)
         await self.farmer.server.send_to_all([msg], NodeType.HARVESTER)
         if new_signage_point.challenge_chain_sp not in self.farmer.sps:
             self.farmer.sps[new_signage_point.challenge_chain_sp] = []
@@ -259,10 +267,10 @@ class FarmerAPI:
             plot_identifier,
             challenge_hash,
             sp_hash,
-            [full_node_request.foliage_sub_block_hash, full_node_request.foliage_block_hash],
+            [full_node_request.foliage_block_data_hash, full_node_request.foliage_transaction_block_hash],
         )
 
-        msg = Message("request_signatures", request)
+        msg = make_msg(ProtocolMessageTypes.request_signatures, request)
         await self.farmer.server.send_to_specific([msg], node_id)
 
     @api_request

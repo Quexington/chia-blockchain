@@ -2,26 +2,27 @@ from dataclasses import dataclass
 from typing import Optional, List, Tuple
 
 from src.types.end_of_slot_bundle import EndOfSubSlotBundle
-from src.types.foliage import FoliageSubBlock
-from src.types.reward_chain_sub_block import (
-    RewardChainSubBlock,
-    RewardChainSubBlockUnfinished,
+from src.types.blockchain_format.foliage import Foliage
+from src.types.blockchain_format.reward_chain_block import (
+    RewardChainBlock,
+    RewardChainBlockUnfinished,
 )
-from src.types.sized_bytes import bytes32
-from src.types.sub_epoch_summary import SubEpochSummary
-from src.types.vdf import VDFInfo, VDFProof
-from src.util.cbor_message import cbor_message
+from src.types.blockchain_format.sized_bytes import bytes32
+from src.types.blockchain_format.sub_epoch_summary import SubEpochSummary
+from src.types.blockchain_format.vdf import VDFInfo, VDFProof
 from src.util.ints import uint8, uint64, uint128
+from src.util.streamable import streamable, Streamable
 
 """
 Protocol between timelord and full node.
+Note: When changing this file, also change protocol_message_types.py, and the protocol version in shared_protocol.py
 """
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewPeak:
-    reward_chain_sub_block: RewardChainSubBlock
+@streamable
+class NewPeakTimelord(Streamable):
+    reward_chain_block: RewardChainBlock
     difficulty: uint64
     deficit: uint8
     sub_slot_iters: uint64  # SSi in the slot where NewPeak has been infused
@@ -33,12 +34,12 @@ class NewPeak:
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewUnfinishedSubBlock:
-    reward_chain_sub_block: RewardChainSubBlockUnfinished  # Reward chain trunk data
+@streamable
+class NewUnfinishedBlock(Streamable):
+    reward_chain_block: RewardChainBlockUnfinished  # Reward chain trunk data
     difficulty: uint64
     sub_slot_iters: uint64  # SSi in the slot where block is infused
-    foliage_sub_block: FoliageSubBlock  # Reward chain foliage data
+    foliage: Foliage  # Reward chain foliage data
     sub_epoch_summary: Optional[SubEpochSummary]  # If this is the last slot in epoch, the next slot should include this
     # This is the last thing infused in the reward chain before this signage point.
     # The challenge that the SP reward chain VDF is based off of, or in the case of sp index 0, the previous infusion
@@ -46,8 +47,8 @@ class NewUnfinishedSubBlock:
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewInfusionPointVDF:
+@streamable
+class NewInfusionPointVDF(Streamable):
     unfinished_reward_hash: bytes32
     challenge_chain_ip_vdf: VDFInfo
     challenge_chain_ip_proof: VDFProof
@@ -58,8 +59,8 @@ class NewInfusionPointVDF:
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewSignagePointVDF:
+@streamable
+class NewSignagePointVDF(Streamable):
     index_from_challenge: uint8
     challenge_chain_sp_vdf: VDFInfo
     challenge_chain_sp_proof: VDFProof
@@ -68,6 +69,6 @@ class NewSignagePointVDF:
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewEndOfSubSlotVDF:
+@streamable
+class NewEndOfSubSlotVDF(Streamable):
     end_of_sub_slot_bundle: EndOfSubSlotBundle

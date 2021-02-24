@@ -26,8 +26,10 @@ def service_kwargs_for_harvester(
     consensus_constants: ConsensusConstants,
 ) -> Dict:
     connect_peers = [PeerInfo(config["farmer_peer"]["host"], config["farmer_peer"]["port"])]
+    overrides = config["network_overrides"][config["selected_network"]]
+    updated_constants = consensus_constants.replace_str_to_bytes(**overrides)
 
-    harvester = Harvester(root_path, config, consensus_constants)
+    harvester = Harvester(root_path, config, updated_constants)
     peer_api = HarvesterAPI(harvester)
 
     kwargs = dict(
@@ -40,6 +42,7 @@ def service_kwargs_for_harvester(
         server_listen_ports=[config["port"]],
         connect_peers=connect_peers,
         auth_connect_peers=True,
+        network_id=updated_constants.GENESIS_CHALLENGE,
     )
     if config["start_rpc_server"]:
         kwargs["rpc_info"] = (HarvesterRpcApi, config["rpc_port"])

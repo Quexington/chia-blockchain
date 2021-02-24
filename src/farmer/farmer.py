@@ -6,15 +6,16 @@ from typing import Dict, List, Optional, Callable, Tuple, Any
 import src.server.ws_connection as ws  # lgtm [py/import-and-import-from]
 from blspy import G1Element
 
+from src.protocols.protocol_message_types import ProtocolMessageTypes
 from src.server.ws_connection import WSChiaConnection
 from src.util.keychain import Keychain
 
 from src.consensus.constants import ConsensusConstants
 
 from src.protocols import farmer_protocol, harvester_protocol
-from src.server.outbound_message import Message, NodeType
-from src.types.proof_of_space import ProofOfSpace
-from src.types.sized_bytes import bytes32
+from src.server.outbound_message import NodeType, make_msg
+from src.types.blockchain_format.proof_of_space import ProofOfSpace
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.ints import uint64
 from src.wallet.derive_keys import master_sk_to_farmer_sk, master_sk_to_pool_sk
 from src.util.bech32m import decode_puzzle_hash
@@ -98,12 +99,12 @@ class Farmer:
 
     async def on_connect(self, peer: WSChiaConnection):
         # Sends a handshake to the harvester
-        msg = harvester_protocol.HarvesterHandshake(
+        handshake = harvester_protocol.HarvesterHandshake(
             self.get_public_keys(),
             self.pool_public_keys,
         )
         if peer.connection_type is NodeType.HARVESTER:
-            msg = Message("harvester_handshake", msg)
+            msg = make_msg(ProtocolMessageTypes.harvester_handshake, handshake)
             await peer.send_message(msg)
 
     def set_server(self, server):
@@ -139,7 +140,7 @@ class Farmer:
                 for key in removed_keys:
                     self.cache_add_time.pop(key, None)
                 time_slept = uint64(0)
-                log.info(
+                log.debug(
                     f"Cleared farmer cache. Num sps: {len(self.sps)} {len(self.proofs_of_space)} "
                     f"{len(self.quality_str_to_identifiers)} {len(self.number_of_responses)}"
                 )

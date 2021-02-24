@@ -1,6 +1,6 @@
 from typing import Optional, List
 import aiosqlite
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.ints import uint32, uint8
 from src.wallet.trade_record import TradeRecord
 from src.types.mempool_inclusion_status import MempoolInclusionStatus
@@ -114,7 +114,7 @@ class TradeStore:
         err_str = err.name if err is not None else None
         append_data = (name, uint8(send_status.value), err_str)
 
-        # Don't increment count if it's already sent to othis peer
+        # Don't increment count if it's already sent to this peer
         if append_data in sent_to:
             return False
 

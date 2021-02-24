@@ -34,7 +34,10 @@ def service_kwargs_for_farmer(
     if fnp is not None:
         connect_peers.append(PeerInfo(fnp["host"], fnp["port"]))
 
-    farmer = Farmer(config, config_pool, keychain, consensus_constants)
+    overrides = config["network_overrides"][config["selected_network"]]
+    updated_constants = consensus_constants.replace_str_to_bytes(**overrides)
+
+    farmer = Farmer(config, config_pool, keychain, consensus_constants=updated_constants)
     peer_api = FarmerAPI(farmer)
 
     kwargs = dict(
@@ -48,6 +51,7 @@ def service_kwargs_for_farmer(
         connect_peers=connect_peers,
         auth_connect_peers=False,
         on_connect_callback=farmer.on_connect,
+        network_id=updated_constants.GENESIS_CHALLENGE,
     )
     if config["start_rpc_server"]:
         kwargs["rpc_info"] = (FarmerRpcApi, config["rpc_port"])

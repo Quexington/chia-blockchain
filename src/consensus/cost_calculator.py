@@ -3,7 +3,7 @@ from typing import Optional, List
 
 from src.consensus.condition_costs import ConditionCost
 from src.types.condition_opcodes import ConditionOpcode
-from src.types.program import Program
+from src.types.blockchain_format.program import SerializedProgram
 from src.types.name_puzzle_condition import NPC
 from src.util.ints import uint64, uint16
 from src.full_node.mempool_check_conditions import get_name_puzzle_conditions
@@ -18,7 +18,9 @@ class CostResult(Streamable):
     cost: uint64
 
 
-def calculate_cost_of_program(program: Program, clvm_cost_ratio_constant: int, strict_mode: bool = False) -> CostResult:
+def calculate_cost_of_program(
+    program: SerializedProgram, clvm_cost_ratio_constant: int, strict_mode: bool = False
+) -> CostResult:
     """
     This function calculates the total cost of either a block or a spendbundle
     """
@@ -45,10 +47,12 @@ def calculate_cost_of_program(program: Program, clvm_cost_ratio_constant: int, s
                 total_vbyte_cost += len(cvp_list) * ConditionCost.ASSERT_BLOCK_INDEX_EXCEEDS.value
             elif condition is ConditionOpcode.ASSERT_MY_COIN_ID:
                 total_vbyte_cost += len(cvp_list) * ConditionCost.ASSERT_MY_COIN_ID.value
-            elif condition is ConditionOpcode.ASSERT_COIN_CONSUMED:
-                total_vbyte_cost += len(cvp_list) * ConditionCost.ASSERT_COIN_CONSUMED.value
             elif condition is ConditionOpcode.ASSERT_FEE:
                 total_vbyte_cost += len(cvp_list) * ConditionCost.ASSERT_FEE.value
+            elif condition is ConditionOpcode.CREATE_ANNOUNCEMENT:
+                total_vbyte_cost += len(cvp_list) * ConditionCost.CREATE_ANNOUNCEMENT.value
+            elif condition is ConditionOpcode.ASSERT_ANNOUNCEMENT:
+                total_vbyte_cost += len(cvp_list) * ConditionCost.ASSERT_ANNOUNCEMENT.value
             else:
                 # We ignore unknown conditions in order to allow for future soft forks
                 pass

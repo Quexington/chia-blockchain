@@ -4,10 +4,10 @@ from typing import List, Optional, Tuple
 
 from blspy import G2Element, AugSchemeMPL
 
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.condition_opcodes import ConditionOpcode
-from src.types.program import Program
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.program import Program
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.types.spend_bundle import CoinSolution, SpendBundle
 from src.util.condition_tools import conditions_dict_for_solution
 from src.util.ints import uint64
@@ -162,15 +162,6 @@ def spend_bundle_for_spendable_ccs(
         coin_solution = CoinSolution(input_coins[index], full_solution)
         coin_solutions.append(coin_solution)
 
-    # now add solutions to consume the lock coins
-
-    for _ in range(N):
-        prev_index = (_ - 1) % N
-        prev_coin = spendable_cc_list[prev_index].coin
-        this_coin = spendable_cc_list[_].coin
-        subtotal = subtotals[_]
-        coin_solution = coin_solution_for_lock_coin(prev_coin, subtotal, this_coin)
-        coin_solutions.append(coin_solution)
     if sigs is None or sigs == []:
         return SpendBundle(coin_solutions, NULL_SIGNATURE)
     else:

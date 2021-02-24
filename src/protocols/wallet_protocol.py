@@ -1,156 +1,155 @@
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
-from src.types.coin import Coin
-from src.types.program import Program
+from src.types.blockchain_format.coin import Coin
+from src.types.blockchain_format.program import Program
 from src.types.spend_bundle import SpendBundle
 from src.types.header_block import HeaderBlock
-from src.types.sized_bytes import bytes32
-from src.util.cbor_message import cbor_message
-from src.util.ints import uint32, uint128
-from src.types.mempool_inclusion_status import MempoolInclusionStatus
+from src.types.blockchain_format.sized_bytes import bytes32
+from src.util.ints import uint32, uint128, uint8
 from src.util.streamable import Streamable, streamable
 
 """
 Protocol between wallet (SPV node) and full node.
+Note: When changing this file, also change protocol_message_types.py, and the protocol version in shared_protocol.py
 """
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestPuzzleSolution:
+@streamable
+class RequestPuzzleSolution(Streamable):
     coin_name: bytes32
-    sub_height: uint32
+    height: uint32
 
 
 @dataclass(frozen=True)
 @streamable
 class PuzzleSolutionResponse(Streamable):
     coin_name: bytes32
-    sub_height: uint32
+    height: uint32
     puzzle: Program
     solution: Program
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondPuzzleSolution:
+@streamable
+class RespondPuzzleSolution(Streamable):
     response: PuzzleSolutionResponse
 
 
 @dataclass(frozen=True)
 @streamable
-class RejectPuzzleSolution:
+class RejectPuzzleSolution(Streamable):
     coin_name: bytes32
-    sub_height: uint32
+    height: uint32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class SendTransaction:
+@streamable
+class SendTransaction(Streamable):
     transaction: SpendBundle
 
 
 @dataclass(frozen=True)
-@cbor_message
-class TransactionAck:
+@streamable
+class TransactionAck(Streamable):
     txid: bytes32
-    status: MempoolInclusionStatus
+    status: uint8  # MempoolInclusionStatus
     error: Optional[str]
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewPeak:
+@streamable
+class NewPeakWallet(Streamable):
     header_hash: bytes32
-    sub_block_height: uint32
+    height: uint32
     weight: uint128
     fork_point_with_previous_peak: uint32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestSubBlockHeader:
-    sub_height: uint32
-
-
-@dataclass(frozen=True)
-@cbor_message
-class RespondSubBlockHeader:
-    header_block: HeaderBlock
-
-
-@dataclass(frozen=True)
-@cbor_message
-class RejectHeaderRequest:
+@streamable
+class RequestBlockHeader(Streamable):
     height: uint32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestRemovals:
-    sub_height: uint32
+@streamable
+class RespondBlockHeader(Streamable):
+    header_block: HeaderBlock
+
+
+@dataclass(frozen=True)
+@streamable
+class RejectHeaderRequest(Streamable):
+    height: uint32
+
+
+@dataclass(frozen=True)
+@streamable
+class RequestRemovals(Streamable):
+    height: uint32
     header_hash: bytes32
     coin_names: Optional[List[bytes32]]
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondRemovals:
-    sub_height: uint32
+@streamable
+class RespondRemovals(Streamable):
+    height: uint32
     header_hash: bytes32
     coins: List[Tuple[bytes32, Optional[Coin]]]
     proofs: Optional[List[Tuple[bytes32, bytes]]]
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RejectRemovalsRequest:
-    sub_height: uint32
+@streamable
+class RejectRemovalsRequest(Streamable):
+    height: uint32
     header_hash: bytes32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestAdditions:
-    sub_height: uint32
+@streamable
+class RequestAdditions(Streamable):
+    height: uint32
     header_hash: bytes32
     puzzle_hashes: Optional[List[bytes32]]
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondAdditions:
-    sub_height: uint32
+@streamable
+class RespondAdditions(Streamable):
+    height: uint32
     header_hash: bytes32
     coins: List[Tuple[bytes32, List[Coin]]]
     proofs: Optional[List[Tuple[bytes32, bytes, Optional[bytes]]]]
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RejectAdditionsRequest:
-    sub_height: uint32
+@streamable
+class RejectAdditionsRequest(Streamable):
+    height: uint32
     header_hash: bytes32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestHeaderBlocks:
-    start_sub_height: uint32
-    end_sub_height: uint32
+@streamable
+class RequestHeaderBlocks(Streamable):
+    start_height: uint32
+    end_height: uint32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RejectHeaderBlocks:
-    start_sub_height: uint32
-    end_sub_height: uint32
+@streamable
+class RejectHeaderBlocks(Streamable):
+    start_height: uint32
+    end_height: uint32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondHeaderBlocks:
-    start_sub_height: uint32
-    end_sub_height: uint32
+@streamable
+class RespondHeaderBlocks(Streamable):
+    start_height: uint32
+    end_height: uint32
     header_blocks: List[HeaderBlock]

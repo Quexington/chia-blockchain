@@ -4,6 +4,9 @@ set -e
 echo "This requires the chia python virtual environment."
 echo "Execute '. ./activate' if you have not already, before running."
 
+# Allows overriding the branch or commit to build in chia-blockchain-gui
+SUBMODULE_BRANCH=$1
+
 UBUNTU=false
 # Manage npm and other install requirements on an OS specific basis
 if [ "$(uname)" = "Linux" ]; then
@@ -55,7 +58,23 @@ fi
 # for Mac and Windows so skip unless completing a source/developer install
 # Ubuntu special cases above
 if [ ! "$CI" ]; then
-	cd ./electron-react
+	echo "Running git submodule update --init --recursive."
+	echo ""
+	git submodule update --init --recursive
+	echo "Running git submodule update."
+	echo ""
+	git submodule update
+	cd chia-blockchain-gui
+
+	if [ "$SUBMODULE_BRANCH" ];
+	then
+		git checkout "$SUBMODULE_BRANCH"
+    git pull
+		echo ""
+		echo "Building the GUI with branch $SUBMODULE_BRANCH"
+		echo ""
+	fi
+
 	npm install
 	npm audit fix
 	npm run locale:extract
@@ -68,4 +87,4 @@ fi
 echo ""
 echo "Chia blockchain install-gui.sh complete."
 echo ""
-echo "Type 'cd electron-react' and then 'npm run electron &' to start the GUI"
+echo "Type 'cd chia-blockchain-gui' and then 'npm run electron &' to start the GUI"

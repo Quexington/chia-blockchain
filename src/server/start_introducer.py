@@ -2,6 +2,7 @@ import pathlib
 
 from typing import Dict
 
+from src.consensus.default_constants import DEFAULT_CONSTANTS
 from src.introducer.introducer import Introducer
 from src.introducer.introducer_api import IntroducerAPI
 from src.server.outbound_message import NodeType
@@ -20,6 +21,8 @@ def service_kwargs_for_introducer(
     root_path: pathlib.Path,
     config: Dict,
 ) -> Dict:
+    overrides = config["network_overrides"][config["selected_network"]]
+    updated_constants = DEFAULT_CONSTANTS.replace_str_to_bytes(**overrides)
     introducer = Introducer(config["max_peers_to_send"], config["recent_peer_threshold"])
     node__api = IntroducerAPI(introducer)
 
@@ -31,6 +34,7 @@ def service_kwargs_for_introducer(
         advertised_port=config["port"],
         service_name=SERVICE_NAME,
         server_listen_ports=[config["port"]],
+        network_id=updated_constants.GENESIS_CHALLENGE,
     )
     return kwargs
 

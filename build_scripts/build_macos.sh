@@ -10,6 +10,7 @@ if [ ! "$CHIA_INSTALLER_VERSION" ]; then
 	CHIA_INSTALLER_VERSION="0.0.0"
 fi
 echo "Chia Installer Version is: $CHIA_INSTALLER_VERSION"
+echo "SCM Version is: $SCM_VERSION"
 
 echo "Installing npm and electron packagers"
 npm install electron-installer-dmg -g
@@ -24,9 +25,9 @@ mkdir dist
 echo "Create executeables with pyinstaller"
 pip install pyinstaller==4.2
 sudo pyinstaller --log-level=INFO daemon.spec
-cp -r dist/daemon ../electron-react
+cp -r dist/daemon ../chia-blockchain-gui
 cd .. || exit
-cd electron-react || exit
+cd chia-blockchain-gui || exit
 
 echo "npm build"
 npm install

@@ -1,17 +1,17 @@
+import dataclasses
 import logging
-from dataclasses import replace
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 
 from src.consensus.blockchain_interface import BlockchainInterface
 from src.consensus.constants import ConsensusConstants
 from src.full_node.signage_point import SignagePoint
-from src.consensus.sub_block_record import SubBlockRecord
+from src.consensus.block_record import BlockRecord
 from src.protocols import timelord_protocol
-from src.types.classgroup import ClassgroupElement
+from src.types.blockchain_format.classgroup import ClassgroupElement
 from src.types.end_of_slot_bundle import EndOfSubSlotBundle
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.types.unfinished_block import UnfinishedBlock
-from src.types.vdf import VDFInfo
+from src.types.blockchain_format.vdf import VDFInfo
 from src.util.ints import uint32, uint8, uint64, uint128
 
 log = logging.getLogger(__name__)
@@ -35,8 +35,8 @@ class FullNodeStore:
     # For the first sub-slot, EndOfSlotBundle is None
     finished_sub_slots: List[Tuple[Optional[EndOfSubSlotBundle], List[Optional[SignagePoint]], uint128]]
 
-    # These caches maintain objects which depend on infused sub-blocks in the reward chain, that we
-    # might receive before the sub-blocks themselves. The dict keys are the reward chain challenge hashes.
+    # These caches maintain objects which depend on infused blocks in the reward chain, that we
+    # might receive before the blocks themselves. The dict keys are the reward chain challenge hashes.
 
     # End of slots which depend on infusions that we don't have
     future_eos_cache: Dict[bytes32, List[EndOfSubSlotBundle]]
@@ -47,6 +47,9 @@ class FullNodeStore:
     # Infusion point VDFs which depend on infusions that we don't have
     future_ip_cache: Dict[bytes32, List[timelord_protocol.NewInfusionPointVDF]]
 
+    # Partial hashes of unfinished blocks we are requesting
+    requesting_unfinished_blocks: Set[bytes32] = set()
+
     def __init__(self):
         self.candidate_blocks = {}
         self.seen_unfinished_blocks = set()
@@ -55,6 +58,7 @@ class FullNodeStore:
         self.future_eos_cache = {}
         self.future_sp_cache = {}
         self.future_ip_cache = {}
+        self.requesting_unfinished_blocks = set()
 
     @classmethod
     async def create(cls, constants: ConsensusConstants):
@@ -67,10 +71,10 @@ class FullNodeStore:
     def add_candidate_block(
         self,
         quality_string: bytes32,
-        sub_height: uint32,
+        height: uint32,
         unfinished_block: UnfinishedBlock,
     ):
-        self.candidate_blocks[quality_string] = (sub_height, unfinished_block)
+        self.candidate_blocks[quality_string] = (height, unfinished_block)
 
     def get_candidate_block(self, quality_string: bytes32) -> Optional[UnfinishedBlock]:
         result = self.candidate_blocks.get(quality_string, None)
@@ -78,10 +82,10 @@ class FullNodeStore:
             return None
         return result[1]
 
-    def clear_candidate_blocks_below(self, sub_height: uint32) -> None:
+    def clear_candidate_blocks_below(self, height: uint32) -> None:
         del_keys = []
         for key, value in self.candidate_blocks.items():
-            if value[0] < sub_height:
+            if value[0] < height:
                 del_keys.append(key)
         for key in del_keys:
             try:
@@ -98,9 +102,9 @@ class FullNodeStore:
     def clear_seen_unfinished_blocks(self) -> None:
         self.seen_unfinished_blocks.clear()
 
-    def add_unfinished_block(self, sub_height: uint32, unfinished_block: UnfinishedBlock) -> None:
+    def add_unfinished_block(self, height: uint32, unfinished_block: UnfinishedBlock) -> None:
         self.unfinished_blocks[unfinished_block.partial_hash] = (
-            sub_height,
+            height,
             unfinished_block,
         )
 
@@ -113,13 +117,13 @@ class FullNodeStore:
     def get_unfinished_blocks(self) -> Dict[bytes32, Tuple[uint32, UnfinishedBlock]]:
         return self.unfinished_blocks
 
-    def clear_unfinished_blocks_below(self, sub_height: uint32) -> None:
+    def clear_unfinished_blocks_below(self, height: uint32) -> None:
         del_keys: List[bytes32] = []
         for partial_reward_hash, (
             unf_height,
             unfinished_block,
         ) in self.unfinished_blocks.items():
-            if unf_height < sub_height:
+            if unf_height < height:
                 del_keys.append(partial_reward_hash)
         for del_key in del_keys:
             del self.unfinished_blocks[del_key]
@@ -154,63 +158,48 @@ class FullNodeStore:
     def new_finished_sub_slot(
         self,
         eos: EndOfSubSlotBundle,
-        sub_blocks: BlockchainInterface,
-        peak: Optional[SubBlockRecord],
+        blocks: BlockchainInterface,
+        peak: Optional[BlockRecord],
     ) -> Optional[List[timelord_protocol.NewInfusionPointVDF]]:
         """
         Returns false if not added. Returns a list if added. The list contains all infusion points that depended
         on this sub slot
-        TODO: do full validation here
         """
         assert len(self.finished_sub_slots) >= 1
 
-        if len(self.finished_sub_slots) == 0:
-            log.warning("no finished sub slots")
-            return None
-
         last_slot, _, last_slot_iters = self.finished_sub_slots[-1]
-        last_slot_ch = (
-            last_slot.challenge_chain.get_hash() if last_slot is not None else self.constants.FIRST_CC_CHALLENGE
+
+        cc_challenge: bytes32 = (
+            last_slot.challenge_chain.get_hash() if last_slot is not None else self.constants.GENESIS_CHALLENGE
         )
-        last_slot_rc_hash = (
-            last_slot.reward_chain.get_hash() if last_slot is not None else self.constants.FIRST_RC_CHALLENGE
+        rc_challenge: bytes32 = (
+            last_slot.reward_chain.get_hash() if last_slot is not None else self.constants.GENESIS_CHALLENGE
         )
+        icc_challenge: Optional[bytes32] = None
+        icc_iters: Optional[uint64] = None
+
         # Skip if already present
         for slot, _, _ in self.finished_sub_slots:
             if slot == eos:
                 return []
 
-        if eos.challenge_chain.challenge_chain_end_of_slot_vdf.challenge != last_slot_ch:
+        if eos.challenge_chain.challenge_chain_end_of_slot_vdf.challenge != cc_challenge:
             # This slot does not append to our next slot
             # This prevent other peers from appending fake VDFs to our cache
             return None
 
-        # TODO: Fix
-        # if not eos.proofs.challenge_chain_slot_proof.is_valid(
-        #     self.constants, ClassgroupElement.get_default_element(),
-        #     replace(eos.challenge_chain.challenge_chain_end_of_slot_vdf,
-        # ):
-        #     return False
-        # if not eos.proofs.reward_chain_slot_proof.is_valid(
-        #     self.constants, ClassgroupElement.get_default_element(), eos.reward_chain.end_of_slot_vdf
-        # ):
-        #     return False
-        # if eos.infused_challenge_chain is not None:
-        #     # TODO: Fix
-        #     if not eos.proofs.infused_challenge_chain_slot_proof.is_valid(
-        #         self.constants,
-        #         ClassgroupElement.get_default_element(),
-        #         eos.infused_challenge_chain.infused_challenge_chain_end_of_slot_vdf,
-        #     ):
-        #         return False
+        if peak is None:
+            sub_slot_iters = self.constants.SUB_SLOT_ITERS_STARTING
+        else:
+            sub_slot_iters = peak.sub_slot_iters
 
-        total_iters = uint128(
-            last_slot_iters + eos.challenge_chain.challenge_chain_end_of_slot_vdf.number_of_iterations
-        )
+        total_iters = uint128(last_slot_iters + sub_slot_iters)
 
         if peak is not None and peak.total_iters > last_slot_iters:
             # Peak is in this slot
             rc_challenge = eos.reward_chain.end_of_slot_vdf.challenge
+            cc_start_element = peak.challenge_vdf_output
+            iters = uint64(total_iters - peak.total_iters)
             if peak.reward_infusion_new_challenge != rc_challenge:
                 # We don't have this challenge hash yet
                 if rc_challenge not in self.future_eos_cache:
@@ -218,46 +207,96 @@ class FullNodeStore:
                 self.future_eos_cache[rc_challenge].append(eos)
                 log.warning(f"Don't have challenge hash {rc_challenge}")
                 return None
-            if peak.total_iters + eos.reward_chain.end_of_slot_vdf.number_of_iterations != total_iters:
-                log.error(
-                    f"Invalid iterations {peak.total_iters} {eos.reward_chain.end_of_slot_vdf.number_of_iterations} "
-                    f"{total_iters}"
-                )
-                return None
 
-            if peak.deficit < self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK:
+            if peak.deficit == self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK:
+                icc_start_element = None
+            elif peak.deficit == self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK - 1:
+                icc_start_element = ClassgroupElement.get_default_element()
+            else:
+                icc_start_element = peak.infused_challenge_vdf_output
+
+            if peak.deficit < self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK:
                 curr = peak
-                while not curr.first_in_sub_slot and not curr.is_challenge_sub_block(self.constants):
-                    curr = sub_blocks.sub_block_record(curr.prev_hash)
-                if curr.is_challenge_sub_block(self.constants):
-                    icc_start_challenge_hash = curr.challenge_block_info_hash
+                while not curr.first_in_sub_slot and not curr.is_challenge_block(self.constants):
+                    curr = blocks.block_record(curr.prev_hash)
+                if curr.is_challenge_block(self.constants):
+                    icc_challenge = curr.challenge_block_info_hash
+                    icc_iters = uint64(total_iters - curr.total_iters)
                 else:
                     assert curr.finished_infused_challenge_slot_hashes is not None
-                    icc_start_challenge_hash = curr.finished_infused_challenge_slot_hashes[-1]
-                if peak.deficit < self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK:
-                    assert eos.infused_challenge_chain is not None
-                    if (
-                        eos.infused_challenge_chain.infused_challenge_chain_end_of_slot_vdf.challenge
-                        != icc_start_challenge_hash
-                    ):
-                        return None
+                    icc_challenge = curr.finished_infused_challenge_slot_hashes[-1]
+                    icc_iters = sub_slot_iters
+                assert icc_challenge is not None
         else:
-            # Empty slot after the peak
-            if eos.reward_chain.end_of_slot_vdf.challenge != last_slot_rc_hash:
-                return None
+            # This is on an empty slot
+            cc_start_element = ClassgroupElement.get_default_element()
+            icc_start_element = ClassgroupElement.get_default_element()
+            iters = sub_slot_iters
+            icc_iters = sub_slot_iters
 
-            if (
-                last_slot is not None
-                and last_slot.reward_chain.deficit < self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK
+            # The icc should only be present if the previous slot had an icc too, and not deficit 0 (just finished slot)
+            icc_challenge = (
+                last_slot.infused_challenge_chain.get_hash()
+                if last_slot is not None
+                and last_slot.infused_challenge_chain is not None
+                and last_slot.reward_chain.deficit != self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK
+                else None
+            )
+
+        # Validate cc VDF
+        partial_cc_vdf_info = VDFInfo(
+            cc_challenge,
+            iters,
+            eos.challenge_chain.challenge_chain_end_of_slot_vdf.output,
+        )
+        # The EOS will have the whole sub-slot iters, but the proof is only the delta, from the last peak
+        if eos.challenge_chain.challenge_chain_end_of_slot_vdf != dataclasses.replace(
+            partial_cc_vdf_info,
+            number_of_iterations=sub_slot_iters,
+        ):
+            return None
+        if not eos.proofs.challenge_chain_slot_proof.is_valid(
+            self.constants,
+            cc_start_element,
+            partial_cc_vdf_info,
+        ):
+            return None
+
+        # Validate reward chain VDF
+        if not eos.proofs.reward_chain_slot_proof.is_valid(
+            self.constants,
+            ClassgroupElement.get_default_element(),
+            eos.reward_chain.end_of_slot_vdf,
+            VDFInfo(rc_challenge, iters, eos.reward_chain.end_of_slot_vdf.output),
+        ):
+            return None
+
+        if icc_challenge is not None:
+            assert icc_start_element is not None
+            assert icc_iters is not None
+            assert eos.infused_challenge_chain is not None
+            assert eos.infused_challenge_chain is not None
+            assert eos.proofs.infused_challenge_chain_slot_proof is not None
+
+            partial_icc_vdf_info = VDFInfo(
+                icc_challenge,
+                iters,
+                eos.infused_challenge_chain.infused_challenge_chain_end_of_slot_vdf.output,
+            )
+            # The EOS will have the whole sub-slot iters, but the proof is only the delta, from the last peak
+            if eos.infused_challenge_chain.infused_challenge_chain_end_of_slot_vdf != dataclasses.replace(
+                partial_icc_vdf_info,
+                number_of_iterations=icc_iters,
             ):
-                assert eos.infused_challenge_chain is not None
-                assert last_slot.infused_challenge_chain is not None
-                # Have infused challenge chain that must be verified
-                if (
-                    eos.infused_challenge_chain.infused_challenge_chain_end_of_slot_vdf.challenge
-                    != last_slot.infused_challenge_chain.get_hash()
-                ):
-                    return None
+                return None
+            if not eos.proofs.infused_challenge_chain_slot_proof.is_valid(
+                self.constants, icc_start_element, partial_icc_vdf_info
+            ):
+                return None
+        else:
+            # This is the first sub slot and it's empty, therefore there is no ICC
+            if eos.infused_challenge_chain is not None or eos.proofs.infused_challenge_chain_slot_proof is not None:
+                return None
 
         self.finished_sub_slots.append((eos, [None] * self.constants.NUM_SPS_SUB_SLOT, total_iters))
 
@@ -270,17 +309,18 @@ class FullNodeStore:
     def new_signage_point(
         self,
         index: uint8,
-        sub_blocks: BlockchainInterface,
-        peak: Optional[SubBlockRecord],
+        blocks: BlockchainInterface,
+        peak: Optional[BlockRecord],
         next_sub_slot_iters: uint64,
         signage_point: SignagePoint,
+        skip_vdf_validation=False,
     ) -> bool:
         """
         Returns true if sp successfully added
         """
         assert len(self.finished_sub_slots) >= 1
 
-        if peak is None or peak.sub_block_height < 2:
+        if peak is None or peak.height < 2:
             sub_slot_iters = self.constants.SUB_SLOT_ITERS_STARTING
         else:
             sub_slot_iters = peak.sub_slot_iters
@@ -297,13 +337,13 @@ class FullNodeStore:
         for sub_slot, sp_arr, start_ss_total_iters in self.finished_sub_slots:
             if sub_slot is None:
                 assert start_ss_total_iters == 0
-                ss_challenge_hash = self.constants.FIRST_CC_CHALLENGE
-                ss_reward_hash = self.constants.FIRST_RC_CHALLENGE
+                ss_challenge_hash = self.constants.GENESIS_CHALLENGE
+                ss_reward_hash = self.constants.GENESIS_CHALLENGE
             else:
                 ss_challenge_hash = sub_slot.challenge_chain.get_hash()
                 ss_reward_hash = sub_slot.reward_chain.get_hash()
             if ss_challenge_hash == signage_point.cc_vdf.challenge:
-                # If we do have this slot, find the Prev sub-block from SP and validate SP
+                # If we do have this slot, find the Prev block from SP and validate SP
                 if peak is not None and start_ss_total_iters > peak.total_iters:
                     # We are in a future sub slot from the peak, so maybe there is a new SSI
                     checkpoint_size: uint64 = uint64(next_sub_slot_iters // self.constants.NUM_SPS_SUB_SLOT)
@@ -327,10 +367,10 @@ class FullNodeStore:
                         and curr.total_iters > sp_total_iters
                     ):
                         if curr.first_in_sub_slot:
-                            # Did not find a sub-block where it's iters are before our sp_total_iters, in this ss
+                            # Did not find a block where it's iters are before our sp_total_iters, in this ss
                             check_from_start_of_ss = True
                             break
-                        curr = sub_blocks.sub_block_record(curr.prev_hash)
+                        curr = blocks.block_record(curr.prev_hash)
 
                 if check_from_start_of_ss:
                     # Check VDFs from start of sub slot
@@ -358,31 +398,35 @@ class FullNodeStore:
                         uint64(sp_total_iters - curr.total_iters),
                         signage_point.rc_vdf.output,
                     )
-                if not signage_point.cc_vdf == replace(cc_vdf_info_expected, number_of_iterations=delta_iters):
+                if not signage_point.cc_vdf == dataclasses.replace(
+                    cc_vdf_info_expected, number_of_iterations=delta_iters
+                ):
                     return False
                 if check_from_start_of_ss:
                     start_ele = ClassgroupElement.get_default_element()
                 else:
                     assert curr is not None
                     start_ele = curr.challenge_vdf_output
-                if not signage_point.cc_proof.is_valid(
-                    self.constants,
-                    start_ele,
-                    cc_vdf_info_expected,
-                ):
-                    return False
+                if not skip_vdf_validation:
+                    if not signage_point.cc_proof.is_valid(
+                        self.constants,
+                        start_ele,
+                        cc_vdf_info_expected,
+                    ):
+                        return False
 
                 if rc_vdf_info_expected.challenge != signage_point.rc_vdf.challenge:
                     # This signage point is probably outdated
                     return False
 
-                if not signage_point.rc_proof.is_valid(
-                    self.constants,
-                    ClassgroupElement.get_default_element(),
-                    signage_point.rc_vdf,
-                    rc_vdf_info_expected,
-                ):
-                    return False
+                if not skip_vdf_validation:
+                    if not signage_point.rc_proof.is_valid(
+                        self.constants,
+                        ClassgroupElement.get_default_element(),
+                        signage_point.rc_vdf,
+                        rc_vdf_info_expected,
+                    ):
+                        return False
 
                 sp_arr[index] = signage_point
                 return True
@@ -390,7 +434,7 @@ class FullNodeStore:
 
     def get_signage_point(self, cc_signage_point: bytes32) -> Optional[SignagePoint]:
         assert len(self.finished_sub_slots) >= 1
-        if cc_signage_point == self.constants.FIRST_CC_CHALLENGE:
+        if cc_signage_point == self.constants.GENESIS_CHALLENGE:
             return SignagePoint(None, None, None, None)
 
         for sub_slot, sps, _ in self.finished_sub_slots:
@@ -411,7 +455,7 @@ class FullNodeStore:
             if sub_slot is not None:
                 cc_hash = sub_slot.challenge_chain.get_hash()
             else:
-                cc_hash = self.constants.FIRST_CC_CHALLENGE
+                cc_hash = self.constants.GENESIS_CHALLENGE
 
             if cc_hash == challenge_hash:
                 if index == 0:
@@ -433,7 +477,7 @@ class FullNodeStore:
             if sub_slot is not None:
                 cc_hash = sub_slot.challenge_chain.get_hash()
             else:
-                cc_hash = self.constants.FIRST_CC_CHALLENGE
+                cc_hash = self.constants.GENESIS_CHALLENGE
 
             if cc_hash == challenge_hash:
                 found_rc_hash = False
@@ -453,72 +497,54 @@ class FullNodeStore:
 
     def new_peak(
         self,
-        peak: SubBlockRecord,
+        peak: BlockRecord,
         sp_sub_slot: Optional[EndOfSubSlotBundle],  # None if not overflow, or in first/second slot
         ip_sub_slot: Optional[EndOfSubSlotBundle],  # None if in first slot
         reorg: bool,
-        sub_blocks: BlockchainInterface,
+        blocks: BlockchainInterface,
     ) -> Tuple[Optional[EndOfSubSlotBundle], List[SignagePoint], List[timelord_protocol.NewInfusionPointVDF]]:
         """
         If the peak is an overflow block, must provide two sub-slots: one for the current sub-slot and one for
-        the prev sub-slot (since we still might get more sub-blocks with an sp in the previous sub-slot)
+        the prev sub-slot (since we still might get more blocks with an sp in the previous sub-slot)
+
+        Results in either one or two sub-slots in finished_sub_slots.
         """
         assert len(self.finished_sub_slots) >= 1
-        new_finished_sub_slots = []
-        total_iters_peak = peak.ip_sub_slot_total_iters(self.constants)
-        ip_sub_slot_found = False
-        if not reorg:
-            # This is a new peak that adds to the last peak. We can clear data in old sub-slots. (and new ones)
-            for index, (sub_slot, sps, total_iters) in enumerate(self.finished_sub_slots):
-                if sub_slot == sp_sub_slot:
-                    # In the case of a peak overflow sub-block (or first ss), the previous sub-slot is added
-                    if sp_sub_slot is None:
-                        # This is a non-overflow sub block
-                        if (
-                            ip_sub_slot is not None
-                            and ip_sub_slot.challenge_chain.challenge_chain_end_of_slot_vdf.challenge
-                            == self.constants.FIRST_CC_CHALLENGE
-                        ):
-                            new_finished_sub_slots.append((sub_slot, sps, total_iters))
-                            continue
 
-                    else:
-                        # Overflow sub block
-                        new_finished_sub_slots.append((sub_slot, sps, total_iters))
+        if ip_sub_slot is None:
+            # We are still in the first sub-slot, no new sub slots ey
+            self.initialize_genesis_sub_slot()
+        else:
+            # This is not the first sub-slot in the chain
+            sp_sub_slot_sps: List[Optional[SignagePoint]] = [None] * self.constants.NUM_SPS_SUB_SLOT
+            ip_sub_slot_sps: List[Optional[SignagePoint]] = [None] * self.constants.NUM_SPS_SUB_SLOT
+            if not reorg:
+                # If it's not a reorg, we can keep signage points that we had before, in the cache
+                for index, (sub_slot, sps, total_iters) in enumerate(self.finished_sub_slots):
+                    if sub_slot is None:
                         continue
-                if sub_slot == ip_sub_slot:
-                    ip_sub_slot_found = True
-                    new_finished_sub_slots.append((sub_slot, sps, total_iters))
-            self.finished_sub_slots = new_finished_sub_slots
-        if reorg or not ip_sub_slot_found:
-            # This is either a reorg, which means some sub-blocks are reverted, or this sub slot is not in our current
-            # cache, delete the entire cache and add this sub slot.
+
+                    if sub_slot == sp_sub_slot:
+                        sp_sub_slot_sps = sps
+                    if sub_slot == ip_sub_slot:
+                        ip_sub_slot_sps = sps
+
             self.clear_slots()
-            if peak.overflow:
-                prev_sub_slot_total_iters = peak.sp_sub_slot_total_iters(self.constants)
-                assert total_iters_peak != prev_sub_slot_total_iters
-                self.finished_sub_slots = [
-                    (
-                        sp_sub_slot,
-                        [None] * self.constants.NUM_SPS_SUB_SLOT,
-                        prev_sub_slot_total_iters,
-                    )
-                ]
-            log.debug(f"5. Adding sub slot {ip_sub_slot is None}, total iters: {total_iters_peak}")
-            self.finished_sub_slots.append(
-                (
-                    ip_sub_slot,
-                    [None] * self.constants.NUM_SPS_SUB_SLOT,
-                    total_iters_peak,
-                )
-            )
+
+            prev_sub_slot_total_iters = peak.sp_sub_slot_total_iters(self.constants)
+            if sp_sub_slot is not None or prev_sub_slot_total_iters == 0:
+                assert peak.overflow or prev_sub_slot_total_iters
+                self.finished_sub_slots.append((sp_sub_slot, sp_sub_slot_sps, prev_sub_slot_total_iters))
+
+            ip_sub_slot_total_iters = peak.ip_sub_slot_total_iters(self.constants)
+            self.finished_sub_slots.append((ip_sub_slot, ip_sub_slot_sps, ip_sub_slot_total_iters))
 
         new_eos: Optional[EndOfSubSlotBundle] = None
         new_sps: List[SignagePoint] = []
         new_ips: List[timelord_protocol.NewInfusionPointVDF] = []
 
         for eos in self.future_eos_cache.get(peak.reward_infusion_new_challenge, []):
-            if self.new_finished_sub_slot(eos, sub_blocks, peak) is not None:
+            if self.new_finished_sub_slot(eos, blocks, peak) is not None:
                 new_eos = eos
                 break
 
@@ -526,7 +552,7 @@ class FullNodeStore:
         for sp in self.future_sp_cache.get(peak.reward_infusion_new_challenge, []):
             assert sp.cc_vdf is not None
             index = uint8(sp.cc_vdf.number_of_iterations // peak.sub_slot_iters)
-            if self.new_signage_point(index, sub_blocks, peak, peak.sub_slot_iters, sp):
+            if self.new_signage_point(index, blocks, peak, peak.sub_slot_iters, sp):
                 new_sps.append(sp)
 
         for ip in self.future_ip_cache.get(peak.reward_infusion_new_challenge, []):
@@ -540,8 +566,8 @@ class FullNodeStore:
 
     def get_finished_sub_slots(
         self,
-        prev_sb: Optional[SubBlockRecord],
-        sub_block_records: BlockchainInterface,
+        prev_b: Optional[BlockRecord],
+        block_records: BlockchainInterface,
         pos_ss_challenge_hash: bytes32,
         extra_sub_slot: bool = False,
     ) -> List[EndOfSubSlotBundle]:
@@ -556,21 +582,21 @@ class FullNodeStore:
         pos_index: Optional[int] = None
         final_index: int = -1
 
-        if prev_sb is not None:
-            curr: SubBlockRecord = prev_sb
+        if prev_b is not None:
+            curr: BlockRecord = prev_b
             assert curr is not None
             while not curr.first_in_sub_slot:
-                curr = sub_block_records.sub_block_record(curr.prev_hash)
+                curr = block_records.block_record(curr.prev_hash)
             assert curr is not None
             assert curr.finished_challenge_slot_hashes is not None
             final_sub_slot_in_chain: bytes32 = curr.finished_challenge_slot_hashes[-1]
         else:
-            final_sub_slot_in_chain = self.constants.FIRST_CC_CHALLENGE
+            final_sub_slot_in_chain = self.constants.GENESIS_CHALLENGE
             final_index = 0
 
-        if pos_ss_challenge_hash == self.constants.FIRST_CC_CHALLENGE:
+        if pos_ss_challenge_hash == self.constants.GENESIS_CHALLENGE:
             pos_index = 0
-        if prev_sb is None:
+        if prev_b is None:
             final_index = 0
             for index, (sub_slot, sps, total_iters) in enumerate(self.finished_sub_slots):
                 if sub_slot is not None and sub_slot.challenge_chain.get_hash() == pos_ss_challenge_hash:
@@ -583,7 +609,7 @@ class FullNodeStore:
                     pos_index = index
                 if sub_slot.challenge_chain.get_hash() == final_sub_slot_in_chain:
                     final_index = index
-                if sub_slot is None and final_sub_slot_in_chain == self.constants.FIRST_CC_CHALLENGE:
+                if sub_slot is None and final_sub_slot_in_chain == self.constants.GENESIS_CHALLENGE:
                     final_index = index
 
         if pos_index is None or final_index is None:

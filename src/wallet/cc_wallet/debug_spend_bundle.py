@@ -4,10 +4,10 @@ from clvm import KEYWORD_FROM_ATOM
 
 from clvm_tools.binutils import disassemble as bu_disassemble
 from blspy import AugSchemeMPL
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.condition_opcodes import ConditionOpcode
-from src.types.program import Program
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.program import Program
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.types.spend_bundle import SpendBundle
 from src.util.condition_tools import conditions_dict_for_solution
 from src.util.condition_tools import pkm_pairs_for_conditions_dict
@@ -24,7 +24,7 @@ KFA = {v: k for k, v in CONDITIONS.items()}
 
 def disassemble(sexp):
     """
-    This version of `disassemble` also disassembles condition opcodes like `ASSERT_COIN_CONSUMED`.
+    This version of `disassemble` also disassembles condition opcodes like `ASSERT_ANNOUNCEMENT_CONSUMED`.
     """
     kfa = dict(KEYWORD_FROM_ATOM)
     kfa.update((Program.to(k).as_atom(), v) for k, v in KFA.items())
@@ -47,8 +47,6 @@ def debug_spend_bundle(spend_bundle: SpendBundle) -> None:
     Print a lot of useful information about a `SpendBundle` that might help with debugging
     its clvm.
     """
-
-    assert_consumed_set = set()
 
     pks = []
     msgs = []
@@ -85,8 +83,6 @@ def debug_spend_bundle(spend_bundle: SpendBundle) -> None:
                             as_prog = Program.to([c.opcode, c.vars[0], c.vars[1]])
                         print(f"  {disassemble(as_prog)}")
                 print()
-                for _ in conditions.get(ConditionOpcode.ASSERT_COIN_CONSUMED, []):
-                    assert_consumed_set.add(bytes32(c.vars[0]))
             else:
                 print("(no output conditions generated)")
         print()
@@ -119,15 +115,11 @@ def debug_spend_bundle(spend_bundle: SpendBundle) -> None:
             print(f"      => created coin id {coin.name()}")
 
     print()
-    print(f"assert_consumed_set = {sorted(assert_consumed_set)}")
     print()
     print(f"zero_coin_set = {sorted(zero_coin_set)}")
     print()
-    set_difference = zero_coin_set ^ assert_consumed_set
-    print(f"zero_coin_set ^ assert_consumed_set = {sorted(set_difference)}")
-    if len(set_difference):
-        print("not all zero coins asserted consumed or vice versa")
-
+    print(f"created announcements = {spend_bundle.announcements()}")
+    print()
     print()
     print("=" * 80)
     print()

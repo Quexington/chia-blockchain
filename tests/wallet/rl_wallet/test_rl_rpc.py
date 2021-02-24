@@ -3,14 +3,14 @@ import pytest
 
 from src.rpc.wallet_rpc_api import WalletRpcApi
 from src.simulator.simulator_protocol import FarmNewBlockProtocol
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.peer_info import PeerInfo
 from src.util.bech32m import encode_puzzle_hash
 from src.util.ints import uint16
 from src.wallet.util.wallet_types import WalletType
 from tests.setup_nodes import setup_simulators_and_wallets, self_hostname
 from tests.time_out_assert import time_out_assert
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.types.mempool_inclusion_status import MempoolInclusionStatus
 
 
@@ -41,9 +41,9 @@ class TestRLWallet:
         await server_2.start_client(PeerInfo(self_hostname, uint16(full_node_server._port)), None)
         await wallet_server_1.start_client(PeerInfo(self_hostname, uint16(full_node_server._port)), None)
         await wallet_server_2.start_client(PeerInfo(self_hostname, uint16(full_node_server._port)), None)
-        await full_node_api.farm_new_block(FarmNewBlockProtocol(ph))
+        await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(ph))
         for i in range(0, num_blocks + 1):
-            await full_node_api.farm_new_block(FarmNewBlockProtocol(32 * b"\0"))
+            await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(32 * b"\0"))
         fund_owners_initial_balance = await wallet.get_confirmed_balance()
 
         api_user = WalletRpcApi(wallet_node_1)
@@ -100,7 +100,7 @@ class TestRLWallet:
             "confirmed_wallet_balance"
         ] == 0
         for i in range(0, 2 * num_blocks):
-            await full_node_api.farm_new_block(FarmNewBlockProtocol(32 * b"\0"))
+            await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(32 * b"\0"))
 
         assert await wallet.get_confirmed_balance() == fund_owners_initial_balance - 101
 
@@ -132,13 +132,13 @@ class TestRLWallet:
         await time_out_assert(15, is_transaction_in_mempool, True, api_user, val["transaction_id"])
 
         for i in range(0, num_blocks):
-            await full_node_api.farm_new_block(FarmNewBlockProtocol(32 * b"\0"))
+            await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(32 * b"\0"))
         await time_out_assert(15, check_balance, 95, api_user, user_wallet_id)
         await time_out_assert(15, receiving_wallet.get_spendable_balance, 3)
         val = await api_admin.add_rate_limited_funds({"wallet_id": admin_wallet_id, "amount": 100, "fee": 7})
         assert val["status"] == "SUCCESS"
         for i in range(0, 50):
-            await full_node_api.farm_new_block(FarmNewBlockProtocol(32 * b"\0"))
+            await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(32 * b"\0"))
         await time_out_assert(15, check_balance, 195, api_user, user_wallet_id)
 
         # test spending
@@ -153,14 +153,14 @@ class TestRLWallet:
         )
         await time_out_assert(15, is_transaction_in_mempool, True, api_user, val["transaction_id"])
         for i in range(0, num_blocks):
-            await full_node_api.farm_new_block(FarmNewBlockProtocol(32 * b"\0"))
+            await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(32 * b"\0"))
         await time_out_assert(15, check_balance, 90, api_user, user_wallet_id)
         await time_out_assert(15, receiving_wallet.get_spendable_balance, 108)
 
         val = await api_admin.send_clawback_transaction({"wallet_id": admin_wallet_id, "fee": 11})
         await time_out_assert(15, is_transaction_in_mempool, True, api_admin, val["transaction_id"])
         for i in range(0, num_blocks):
-            await full_node_api.farm_new_block(FarmNewBlockProtocol(32 * b"\0"))
+            await full_node_api.farm_new_transaction_block(FarmNewBlockProtocol(32 * b"\0"))
         await time_out_assert(15, check_balance, 0, api_user, user_wallet_id)
         await time_out_assert(15, check_balance, 0, api_admin, user_wallet_id)
         final_balance = await wallet.get_confirmed_balance()

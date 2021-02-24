@@ -29,7 +29,14 @@ def service_kwargs_for_wallet(
     consensus_constants: ConsensusConstants,
     keychain: Keychain,
 ) -> Dict:
-    node = WalletNode(config, keychain, root_path, consensus_constants=consensus_constants)
+    overrides = config["network_overrides"][config["selected_network"]]
+    updated_constants = consensus_constants.replace_str_to_bytes(**overrides)
+    node = WalletNode(
+        config,
+        keychain,
+        root_path,
+        consensus_constants=updated_constants,
+    )
     peer_api = WalletNodeAPI(node)
     fnp = config.get("full_node_peer")
 
@@ -49,6 +56,7 @@ def service_kwargs_for_wallet(
         on_connect_callback=node.on_connect,
         connect_peers=connect_peers,
         auth_connect_peers=False,
+        network_id=updated_constants.GENESIS_CHALLENGE,
     )
     port = config.get("port")
     if port is not None:
@@ -71,6 +79,7 @@ def main():
         constants = test_constants
         current = config["database_path"]
         config["database_path"] = f"{current}_simulation"
+        config["selected_network"] = "testnet0"
     else:
         constants = DEFAULT_CONSTANTS
     keychain = Keychain(testing=False)

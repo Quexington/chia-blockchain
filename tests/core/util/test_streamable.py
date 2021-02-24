@@ -1,15 +1,16 @@
 import unittest
 from dataclasses import dataclass
 from typing import List, Optional
+from pytest import raises
 
-from src.util.ints import uint32
-from src.types.coin import Coin
-from src.types.sized_bytes import bytes32
+from src.types.weight_proof import SubEpochChallengeSegment
+from src.util.ints import uint32, uint8
+from src.types.blockchain_format.coin import Coin
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.types.full_block import FullBlock
 from src.util.streamable import Streamable, streamable
 from src.protocols.wallet_protocol import RespondRemovals
 from tests.setup_nodes import test_constants, bt
-from src.util import cbor
 
 
 class TestStreamable(unittest.TestCase):
@@ -82,8 +83,82 @@ class TestStreamable(unittest.TestCase):
         coin: Optional[Coin] = None
         l1 = [(bytes32([2] * 32), coin)]
         rr = RespondRemovals(uint32(1), bytes32([1] * 32), l1, None)
-        c = cbor.loads(cbor.dumps(rr))
-        RespondRemovals(c["sub_height"], c["header_hash"], c["coins"], c["proofs"])
+        RespondRemovals(rr.height, rr.header_hash, rr.coins, rr.proofs)
+
+    def test_ambiguous_deserialization_optionals(self):
+        with raises(AssertionError):
+            SubEpochChallengeSegment.from_bytes(b"\x00\x00\x00\x03\xff\xff\xff\xff")
+
+        @dataclass(frozen=True)
+        @streamable
+        class TestClassOptional(Streamable):
+            a: Optional[uint8]
+
+        # Does not have the required elements
+        with raises(AssertionError):
+            TestClassOptional.from_bytes(bytes([]))
+
+        TestClassOptional.from_bytes(bytes([0]))
+        TestClassOptional.from_bytes(bytes([1, 2]))
+
+    def test_ambiguous_deserialization_int(self):
+        @dataclass(frozen=True)
+        @streamable
+        class TestClassUint(Streamable):
+            a: uint32
+
+        # Does not have the required uint size
+        with raises(AssertionError):
+            TestClassUint.from_bytes(b"\x00\x00")
+
+    def test_ambiguous_deserialization_list(self):
+        @dataclass(frozen=True)
+        @streamable
+        class TestClassList(Streamable):
+            a: List[uint8]
+
+        # Does not have the required elements
+        with raises(AssertionError):
+            TestClassList.from_bytes(bytes([0, 0, 100, 24]))
+
+    def test_ambiguous_deserialization_str(self):
+        @dataclass(frozen=True)
+        @streamable
+        class TestClassStr(Streamable):
+            a: str
+
+        # Does not have the required str size
+        with raises(AssertionError):
+            TestClassStr.from_bytes(bytes([0, 0, 100, 24, 52]))
+
+    def test_ambiguous_deserialization_bytes(self):
+        @dataclass(frozen=True)
+        @streamable
+        class TestClassBytes(Streamable):
+            a: bytes
+
+        # Does not have the required str size
+        with raises(AssertionError):
+            TestClassBytes.from_bytes(bytes([0, 0, 100, 24, 52]))
+
+        with raises(AssertionError):
+            TestClassBytes.from_bytes(bytes([0, 0, 0, 1]))
+
+        TestClassBytes.from_bytes(bytes([0, 0, 0, 1, 52]))
+        TestClassBytes.from_bytes(bytes([0, 0, 0, 2, 52, 21]))
+
+    def test_ambiguous_deserialization_bool(self):
+        @dataclass(frozen=True)
+        @streamable
+        class TestClassBool(Streamable):
+            a: bool
+
+        # Does not have the required str size
+        with raises(AssertionError):
+            TestClassBool.from_bytes(bytes([]))
+
+        TestClassBool.from_bytes(bytes([0]))
+        TestClassBool.from_bytes(bytes([1]))
 
 
 if __name__ == "__main__":

@@ -5,11 +5,12 @@ from typing import Dict, List
 import pytest
 
 from src.protocols import full_node_protocol
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.coin_solution import CoinSolution
 from src.types.condition_var_pair import ConditionVarPair
 from src.types.condition_opcodes import ConditionOpcode
 from src.types.spend_bundle import SpendBundle
+from src.types.announcement import Announcement
 from src.util.condition_tools import conditions_for_solution
 from src.util.clvm import int_to_bytes
 from src.util.ints import uint64
@@ -62,7 +63,7 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         blocks = bt.get_consecutive_blocks(
             3,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
@@ -70,7 +71,7 @@ class TestMempool:
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
         await time_out_assert(60, node_height_at_least, True, full_node_2, 2)
 
@@ -91,19 +92,19 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         spend_bundle1 = generate_test_spend_bundle(list(blocks[-1].get_included_reward_coins())[0])
 
@@ -131,19 +132,19 @@ class TestMempool:
 
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         spend_bundle1 = generate_test_spend_bundle(list(blocks[-1].get_included_reward_coins())[0])
         assert spend_bundle1 is not None
@@ -169,23 +170,23 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         cvp = ConditionVarPair(
             ConditionOpcode.ASSERT_BLOCK_INDEX_EXCEEDS,
-            [uint64(start_sub_height + 5).to_bytes(4, "big")],
+            [uint64(start_height + 5).to_bytes(4, "big")],
         )
         dic = {ConditionOpcode.ASSERT_BLOCK_INDEX_EXCEEDS: [cvp]}
 
@@ -204,19 +205,19 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         cvp = ConditionVarPair(ConditionOpcode.ASSERT_BLOCK_INDEX_EXCEEDS, [uint64(1).to_bytes(4, "big")])
         dic = {ConditionOpcode.ASSERT_BLOCK_INDEX_EXCEEDS: [cvp]}
@@ -236,7 +237,7 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         blocks = bt.get_consecutive_blocks(
             3,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
@@ -244,7 +245,7 @@ class TestMempool:
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
         await time_out_assert(60, node_height_at_least, True, full_node_1, 2)
 
@@ -265,20 +266,20 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             4,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 4)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 4)
 
         cvp = ConditionVarPair(ConditionOpcode.ASSERT_BLOCK_AGE_EXCEEDS, [uint64(1).to_bytes(4, "big")])
         dic = {cvp.opcode: [cvp]}
@@ -298,11 +299,11 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
@@ -310,9 +311,9 @@ class TestMempool:
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         coin = list(blocks[-1].get_included_reward_coins())[0]
         cvp = ConditionVarPair(ConditionOpcode.ASSERT_MY_COIN_ID, [coin.name()])
@@ -333,20 +334,20 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height if len(blocks) > 0 else -1
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         coin = list(blocks[-1].get_included_reward_coins())[0]
         coin_2 = list(blocks[-2].get_included_reward_coins())[0]
@@ -368,20 +369,20 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height if len(blocks) > 0 else -1
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         time_now = uint64(int(time() * 1000))
 
@@ -403,20 +404,20 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height if len(blocks) > 0 else -1
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         time_now = uint64(int(time() * 1000))
         time_now_plus_3 = time_now + 3000
@@ -441,33 +442,39 @@ class TestMempool:
         assert sb1 is spend_bundle1
 
     @pytest.mark.asyncio
-    async def test_correct_coin_consumed(self, two_nodes):
+    async def test_correct_announcement_consumed(self, two_nodes):
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height if len(blocks) > 0 else -1
         blocks = bt.get_consecutive_blocks(
-            4,
+            3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 4)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         coin_1 = list(blocks[-2].get_included_reward_coins())[0]
         coin_2 = list(blocks[-1].get_included_reward_coins())[0]
-        cvp = ConditionVarPair(ConditionOpcode.ASSERT_COIN_CONSUMED, [coin_2.name()])
+
+        announce = Announcement(coin_2.name(), bytes("test", "utf-8"))
+
+        cvp = ConditionVarPair(ConditionOpcode.ASSERT_ANNOUNCEMENT, [announce.name()])
+
         dic = {cvp.opcode: [cvp]}
 
+        cvp2 = ConditionVarPair(ConditionOpcode.CREATE_ANNOUNCEMENT, [bytes("test", "utf-8")])
+        dic2 = {cvp.opcode: [cvp2]}
         spend_bundle1 = generate_test_spend_bundle(coin_1, dic)
 
-        spend_bundle2 = generate_test_spend_bundle(coin_2)
+        spend_bundle2 = generate_test_spend_bundle(coin_2, dic2)
 
         bundle = SpendBundle.aggregate([spend_bundle1, spend_bundle2])
 
@@ -479,40 +486,96 @@ class TestMempool:
         assert mempool_bundle is bundle
 
     @pytest.mark.asyncio
-    async def test_invalid_coin_consumed(self, two_nodes):
+    async def test_invalid_announcement_consumed(self, two_nodes):
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height if len(blocks) > 0 else -1
         blocks = bt.get_consecutive_blocks(
-            4,
+            3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
-
-        for b in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(b))
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         coin_1 = list(blocks[-2].get_included_reward_coins())[0]
         coin_2 = list(blocks[-1].get_included_reward_coins())[0]
-        cvp = ConditionVarPair(ConditionOpcode.ASSERT_COIN_CONSUMED, [coin_2.name()])
+
+        announce = Announcement(coin_2.name(), bytes("test", "utf-8"))
+
+        cvp = ConditionVarPair(ConditionOpcode.ASSERT_ANNOUNCEMENT, [announce.name()])
+
         dic = {cvp.opcode: [cvp]}
 
+        cvp2 = ConditionVarPair(
+            ConditionOpcode.CREATE_ANNOUNCEMENT,
+            [bytes("wrong test", "utf-8")],
+        )
+        dic2 = {cvp.opcode: [cvp2]}
         spend_bundle1 = generate_test_spend_bundle(coin_1, dic)
 
-        assert spend_bundle1 is not None
+        spend_bundle2 = generate_test_spend_bundle(coin_2, dic2)
+
+        bundle = SpendBundle.aggregate([spend_bundle1, spend_bundle2])
+
         tx1: full_node_protocol.RespondTransaction = full_node_protocol.RespondTransaction(spend_bundle1)
         await full_node_1.respond_transaction(tx1, peer)
 
-        mempool_bundle = full_node_1.full_node.mempool_manager.get_spendbundle(spend_bundle1.name())
+        mempool_bundle = full_node_1.full_node.mempool_manager.get_spendbundle(bundle.name())
+
+        assert mempool_bundle is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_announcement_consumed_two(self, two_nodes):
+        reward_ph = WALLET_A.get_new_puzzlehash()
+        full_node_1, full_node_2, server_1, server_2 = two_nodes
+        blocks = await full_node_1.get_all_full_blocks()
+        start_height = blocks[-1].height if len(blocks) > 0 else -1
+        blocks = bt.get_consecutive_blocks(
+            3,
+            block_list_input=blocks,
+            guarantee_transaction_block=True,
+            farmer_reward_puzzle_hash=reward_ph,
+            pool_reward_puzzle_hash=reward_ph,
+        )
+        peer = await connect_and_get_peer(server_1, server_2)
+
+        for block in blocks:
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
+
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
+
+        coin_1 = list(blocks[-2].get_included_reward_coins())[0]
+        coin_2 = list(blocks[-1].get_included_reward_coins())[0]
+
+        announce = Announcement(coin_1.name(), bytes("test", "utf-8"))
+
+        cvp = ConditionVarPair(ConditionOpcode.ASSERT_ANNOUNCEMENT, [announce.name()])
+
+        dic = {cvp.opcode: [cvp]}
+
+        cvp2 = ConditionVarPair(
+            ConditionOpcode.CREATE_ANNOUNCEMENT,
+            [bytes("test", "utf-8")],
+        )
+        dic2 = {cvp.opcode: [cvp2]}
+        spend_bundle1 = generate_test_spend_bundle(coin_1, dic)
+
+        spend_bundle2 = generate_test_spend_bundle(coin_2, dic2)
+
+        bundle = SpendBundle.aggregate([spend_bundle1, spend_bundle2])
+
+        tx1: full_node_protocol.RespondTransaction = full_node_protocol.RespondTransaction(spend_bundle1)
+        await full_node_1.respond_transaction(tx1, peer)
+
+        mempool_bundle = full_node_1.full_node.mempool_manager.get_spendbundle(bundle.name())
 
         assert mempool_bundle is None
 
@@ -521,20 +584,20 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         cvp = ConditionVarPair(ConditionOpcode.ASSERT_FEE, [int_to_bytes(10)])
         dic = {cvp.opcode: [cvp]}
@@ -556,20 +619,20 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         cvp = ConditionVarPair(ConditionOpcode.ASSERT_FEE, [int_to_bytes(10)])
         dic = {cvp.opcode: [cvp]}
@@ -591,11 +654,11 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             5,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
@@ -604,9 +667,9 @@ class TestMempool:
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 5)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 5)
 
         receiver_puzzlehash = BURN_PUZZLE_HASH
 
@@ -646,20 +709,20 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
         peer = await connect_and_get_peer(server_1, server_2)
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
         coin = list(blocks[-1].get_included_reward_coins())[0]
         spend_bundle1 = generate_test_spend_bundle(coin)
 
@@ -686,19 +749,19 @@ class TestMempool:
         reward_ph = WALLET_A.get_new_puzzlehash()
         full_node_1, full_node_2, server_1, server_2 = two_nodes
         blocks = await full_node_1.get_all_full_blocks()
-        start_sub_height = blocks[-1].sub_block_height
+        start_height = blocks[-1].height
         blocks = bt.get_consecutive_blocks(
             3,
             block_list_input=blocks,
-            guarantee_block=True,
+            guarantee_transaction_block=True,
             farmer_reward_puzzle_hash=reward_ph,
             pool_reward_puzzle_hash=reward_ph,
         )
 
         for block in blocks:
-            await full_node_1.full_node.respond_sub_block(full_node_protocol.RespondSubBlock(block))
+            await full_node_1.full_node.respond_block(full_node_protocol.RespondBlock(block))
 
-        await time_out_assert(60, node_height_at_least, True, full_node_1, start_sub_height + 3)
+        await time_out_assert(60, node_height_at_least, True, full_node_1, start_height + 3)
 
         # this code has been changed to use generate_test_spend_bundle
         # not quite sure why all the gymnastics are being performed

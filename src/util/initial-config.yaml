@@ -1,10 +1,24 @@
-network_id: testnet  # testnet/mainnet
 min_mainnet_k_size: 32
 
 # Send a ping to all peers after ping_interval seconds
 ping_interval: 120
 self_hostname: &self_hostname "localhost"
 daemon_port: 55400
+
+network_overrides: &network_overrides
+  testnet0:
+    GENESIS_CHALLENGE: "0000000000000000000000000000000000000000000000000000000000000000"
+  testnet1:
+    DIFFICULTY_CONSTANT_FACTOR: 33554432
+    DIFFICULTY_STARTING: 16777216
+    GENESIS_CHALLENGE: "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"  # std_hash(b"1")
+    GENESIS_PRE_FARM_POOL_PUZZLE_HASH: "23b039a829f3ed14a260355b9fc55d9ccc4539f05bd4bf529fd2630de1751d52"
+    GENESIS_PRE_FARM_FARMER_PUZZLE_HASH: "23b039a829f3ed14a260355b9fc55d9ccc4539f05bd4bf529fd2630de1751d52"
+  testnet2:
+    GENESIS_CHALLENGE: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35" # std_hash(b"2")
+
+
+selected_network: &selected_network "testnet2"
 
 # public ssl ca is included in source code
 # Privet ssl ca is used for trusted connections between machines user owns
@@ -41,6 +55,8 @@ harvester:
   num_threads: 30
 
   logging: *logging
+  network_overrides: *network_overrides
+  selected_network: *selected_network
 
   # Plots are searched for in the following directories
   plot_directories: []
@@ -57,11 +73,13 @@ harvester:
     crt: "config/ssl/ca/chia_ca.crt"
     key: "config/ssl/ca/chia_ca.key"
 
-pool: {
+pool:
   # Replace this with a real puzzle hash
   # xch_target_address: txch102gkhhzs60grx7cfnpng5n6rjecr89r86l5s8xux2za8k820cxsq64ssdg
   logging: *logging
-}
+  network_overrides: *network_overrides
+  selected_network: *selected_network
+
 
 farmer:
   # The farmer server (if run) will run on this port
@@ -86,6 +104,8 @@ farmer:
   # To send a share to a pool, a proof of space must have required_iters less than this number
   pool_share_threshold: 1000
   logging: *logging
+  network_overrides: *network_overrides
+  selected_network: *selected_network
 
   ssl:
     private_crt:  "config/ssl/farmer/private_farmer.crt"
@@ -124,6 +144,8 @@ timelord:
     host: *self_hostname
     port: 8000
   logging: *logging
+  network_overrides: *network_overrides
+  selected_network: *selected_network
   # fast_algorithm is a faster proof generation algorithm. This speed increase
   # requires much less memory usage and a does not have the risk of OOM that
   # the normal timelord has but requires significantly more cores doing
@@ -152,9 +174,10 @@ full_node:
   port: 58444
 
   # Run multiple nodes with different databases by changing the database_path
-  database_path: db/blockchain_v23.db
-  peer_db_path: db/peer_table_node.db
-  simulator_database_path: sim_db/simulator_blockchain_v23.db
+  database_path: db/blockchain_v28_CHALLENGE.sqlite
+  peer_db_path: db/peer_table_node.sqlite
+  simulator_database_path: sim_db/simulator_blockchain_v28_CHALLENGE.sqlite
+  simulator_peer_db_path: sim_db/peer_table_node.sqlite
 
   # If True, starts an RPC server at the following port
   start_rpc_server: True
@@ -164,10 +187,10 @@ full_node:
   enable_upnp: True
 
   # If node is more than these blocks behind, will do a sync (long sync)
-  sync_sub_blocks_behind_threshold: 300
+  sync_blocks_behind_threshold: 300
 
   # If node is more than these blocks behind, will do a short batch-sync, if it's less, will do a backtrack sync
-  short_sync_sub_blocks_behind_threshold: 10
+  short_sync_blocks_behind_threshold: 20
 
   # How often to initiate outbound connections to other full nodes.
   peer_connect_interval: 30
@@ -201,6 +224,8 @@ full_node:
     host: *self_hostname
     port: 8449
   logging: *logging
+  network_overrides: *network_overrides
+  selected_network: *selected_network
 
   ssl:
     private_crt:  "config/ssl/full_node/private_full_node.crt"
@@ -218,6 +243,16 @@ ui:
   # This SSH key is for the ui SSH server
   ssh_filename: config/ssh_host_key
   logging: *logging
+  network_overrides: *network_overrides
+  selected_network: *selected_network
+
+  # this is where the electron UI will find its daemon
+  # defaults to the one running locally with its private keys
+  daemon_host: *self_hostname
+  daemon_port: 55400
+  daemon_ssl:
+    private_crt: config/ssl/daemon/private_daemon.crt
+    private_key: config/ssl/daemon/private_daemon.key
 
 introducer:
   host: *self_hostname
@@ -227,6 +262,8 @@ introducer:
   # recent_peer_threshold seconds
   recent_peer_threshold: 6000
   logging: *logging
+  network_overrides: *network_overrides
+  selected_network: *selected_network
 
   ssl:
     public_crt:  "config/ssl/full_node/public_full_node.crt"
@@ -249,10 +286,12 @@ wallet:
     port: 58444
 
   testing: False
-  database_path: wallet/db/blockchain_wallet_v23.db
-  wallet_peers_path: wallet/db/wallet_peers.db
+  database_path: wallet/db/blockchain_wallet_v28_CHALLENGE_KEY.sqlite
+  wallet_peers_path: wallet/db/wallet_peers.sqlite
 
   logging: *logging
+  network_overrides: *network_overrides
+  selected_network: *selected_network
 
   target_peer_count: 5
   peer_connect_interval: 60

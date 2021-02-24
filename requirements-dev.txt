@@ -32,7 +32,7 @@ pytest-asyncio>=0.14.0
 setuptools_scm>=4.1.2
 # No Dependencies
 
-PyYAML~=5.3.1
+PyYAML~=5.4.1
 cbor2~=5.2.0
 colorlog~=4.7.2
 keyring~=21.5.0
@@ -47,7 +47,7 @@ wheel~=0.36.2
 idna~=3.1
 multidict~=5.1.0
 six~=1.15.0
-cffi~=1.14.4
+cffi~=1.14.5
 setuptools~=52.0.0
 pluggy~=0.13.1
 iniconfig~=1.1.1
@@ -55,6 +55,6 @@ yarl~=1.6.3
 chardet~=4.0.0
 pyparsing~=2.4.7
 pycparser~=2.20
-packaging~=20.8
+packaging~=20.9
 zipp~=3.4.0
-portalocker~=2.2.0
+portalocker~=2.2.1

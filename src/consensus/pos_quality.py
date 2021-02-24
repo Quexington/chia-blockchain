@@ -1,5 +1,5 @@
 from src.util.ints import uint64
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.sized_bytes import bytes32
 
 
 # The actual space in bytes of a plot, is _expected_plot_size(k) * UI_ACTUAL_SPACE_CONSTANT_FACTO
@@ -16,8 +16,7 @@ def _expected_plot_size(k: int) -> uint64:
     is necessary to store the entries in the plot.
     """
 
-    # TODO(mariano): fix formula
-    return ((2 * k) + 1) * (2 ** k - 1)
+    return ((2 * k) + 1) * (2 ** (k - 1))
 
 
 def quality_str_to_quality(quality_str: bytes32, k: int) -> uint64:

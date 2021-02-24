@@ -5,22 +5,20 @@ from chiabip158 import PyBIP158
 
 from src.types.header_block import HeaderBlock
 from src.types.name_puzzle_condition import NPC
-from src.types.coin import Coin
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.coin import Coin
+from src.types.announcement import Announcement
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.full_node.mempool_check_conditions import get_name_puzzle_conditions
-from src.util.condition_tools import created_outputs_for_conditions_dict
-from src.util.ints import uint32, uint64
-from src.util.streamable import Streamable, streamable
-from src.types.vdf import VDFProof
-from src.types.reward_chain_sub_block import RewardChainSubBlock
-from src.types.end_of_slot_bundle import EndOfSubSlotBundle
-from src.types.foliage import FoliageSubBlock, FoliageBlock, TransactionsInfo
-from src.types.program import Program
-from src.consensus.coinbase import create_pool_coin, create_farmer_coin
-from src.consensus.block_rewards import (
-    calculate_pool_reward,
-    calculate_base_farmer_reward,
+from src.util.condition_tools import (
+    created_outputs_for_conditions_dict,
+    created_announcements_for_conditions_dict,
 )
+from src.util.streamable import Streamable, streamable
+from src.types.blockchain_format.vdf import VDFProof
+from src.types.blockchain_format.reward_chain_block import RewardChainBlock
+from src.types.end_of_slot_bundle import EndOfSubSlotBundle
+from src.types.blockchain_format.foliage import Foliage, FoliageTransactionBlock, TransactionsInfo
+from src.types.blockchain_format.program import SerializedProgram
 
 
 @dataclass(frozen=True)
@@ -28,67 +26,43 @@ from src.consensus.block_rewards import (
 class FullBlock(Streamable):
     # All the information required to validate a block
     finished_sub_slots: List[EndOfSubSlotBundle]  # If first sb
-    reward_chain_sub_block: RewardChainSubBlock  # Reward chain trunk data
+    reward_chain_block: RewardChainBlock  # Reward chain trunk data
     challenge_chain_sp_proof: Optional[VDFProof]  # If not first sp in sub-slot
     challenge_chain_ip_proof: VDFProof
     reward_chain_sp_proof: Optional[VDFProof]  # If not first sp in sub-slot
     reward_chain_ip_proof: VDFProof
     infused_challenge_chain_ip_proof: Optional[VDFProof]  # Iff deficit < 4
-    foliage_sub_block: FoliageSubBlock  # Reward chain foliage data
-    foliage_block: Optional[FoliageBlock]  # Reward chain foliage data (tx block)
+    foliage: Foliage  # Reward chain foliage data
+    foliage_transaction_block: Optional[FoliageTransactionBlock]  # Reward chain foliage data (tx block)
     transactions_info: Optional[TransactionsInfo]  # Reward chain foliage data (tx block additional)
-    transactions_generator: Optional[Program]  # Program that generates transactions
+    transactions_generator: Optional[SerializedProgram]  # Program that generates transactions
 
     @property
     def prev_header_hash(self):
-        return self.foliage_sub_block.prev_sub_block_hash
+        return self.foliage.prev_block_hash
 
     @property
     def height(self):
-        if self.foliage_block is None:
-            raise ValueError("Not a block")
-        return self.foliage_block.height
-
-    @property
-    def sub_block_height(self):
-        return self.reward_chain_sub_block.sub_block_height
+        return self.reward_chain_block.height
 
     @property
     def weight(self):
-        return self.reward_chain_sub_block.weight
+        return self.reward_chain_block.weight
 
     @property
     def total_iters(self):
-        return self.reward_chain_sub_block.total_iters
+        return self.reward_chain_block.total_iters
 
     @property
     def header_hash(self):
-        return self.foliage_sub_block.get_hash()
+        return self.foliage.get_hash()
 
-    def is_block(self):
-        return self.foliage_block is not None
-
-    def get_future_reward_coins(self, height: uint32) -> Tuple[Coin, Coin]:
-        pool_amount = calculate_pool_reward(height)
-        farmer_amount = calculate_base_farmer_reward(height)
-        if self.is_block():
-            assert self.transactions_info is not None
-            farmer_amount = uint64(farmer_amount + self.transactions_info.fees)
-        pool_coin: Coin = create_pool_coin(
-            self.sub_block_height,
-            self.foliage_sub_block.foliage_sub_block_data.pool_target.puzzle_hash,
-            pool_amount,
-        )
-        farmer_coin: Coin = create_farmer_coin(
-            self.sub_block_height,
-            self.foliage_sub_block.foliage_sub_block_data.farmer_reward_puzzle_hash,
-            farmer_amount,
-        )
-        return pool_coin, farmer_coin
+    def is_transaction_block(self):
+        return self.foliage_transaction_block is not None
 
     def get_block_header(self) -> HeaderBlock:
         # Create filter
-        if self.is_block():
+        if self.is_transaction_block():
             byte_array_tx: List[bytes32] = []
             removals_names, addition_coins = self.tx_removals_and_additions()
 
@@ -107,20 +81,20 @@ class FullBlock(Streamable):
 
         return HeaderBlock(
             self.finished_sub_slots,
-            self.reward_chain_sub_block,
+            self.reward_chain_block,
             self.challenge_chain_sp_proof,
             self.challenge_chain_ip_proof,
             self.reward_chain_sp_proof,
             self.reward_chain_ip_proof,
             self.infused_challenge_chain_ip_proof,
-            self.foliage_sub_block,
-            self.foliage_block,
+            self.foliage,
+            self.foliage_transaction_block,
             encoded_filter,
             self.transactions_info,
         )
 
     def get_included_reward_coins(self) -> Set[Coin]:
-        if not self.is_block():
+        if not self.is_transaction_block():
             return set()
         assert self.transactions_info is not None
         return set(self.transactions_info.reward_claims_incorporated)
@@ -170,3 +144,12 @@ def additions_for_npc(npc_list: List[NPC]) -> List[Coin]:
             additions.append(coin)
 
     return additions
+
+
+def announcements_for_npc(npc_list: List[NPC]) -> List[Announcement]:
+    announcements: List[Announcement] = []
+
+    for npc in npc_list:
+        announcements.extend(created_announcements_for_conditions_dict(npc.condition_dict, npc.coin_name))
+
+    return announcements

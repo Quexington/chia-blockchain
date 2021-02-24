@@ -1,10 +1,10 @@
 from typing import Dict, Optional, List
 import aiosqlite
 from src.types.full_block import FullBlock
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.coin_record import CoinRecord
-from src.types.sized_bytes import bytes32
-from src.util.ints import uint32
+from src.types.blockchain_format.sized_bytes import bytes32
+from src.util.ints import uint32, uint64
 
 
 class CoinStore:
@@ -33,7 +33,7 @@ class CoinStore:
                 " coinbase int,"
                 " puzzle_hash text,"
                 " coin_parent text,"
-                " amount bigint,"
+                " amount blob,"
                 " timestamp bigint)"
             )
         )
@@ -55,11 +55,11 @@ class CoinStore:
 
     async def new_block(self, block: FullBlock):
         """
-        Only called for sub-blocks which are blocks (and thus have rewards and transactions)
+        Only called for blocks which are blocks (and thus have rewards and transactions)
         """
-        if block.is_block() is False:
+        if block.is_transaction_block() is False:
             return
-        assert block.foliage_block is not None
+        assert block.foliage_transaction_block is not None
         removals, additions = block.tx_removals_and_additions()
 
         for coin in additions:
@@ -69,7 +69,7 @@ class CoinStore:
                 uint32(0),
                 False,
                 False,
-                block.foliage_block.timestamp,
+                block.foliage_transaction_block.timestamp,
             )
             await self._add_coin_record(record)
 
@@ -89,7 +89,7 @@ class CoinStore:
                 uint32(0),
                 False,
                 True,
-                block.foliage_block.timestamp,
+                block.foliage_transaction_block.timestamp,
             )
             await self._add_coin_record(reward_coin_r)
 
@@ -101,7 +101,7 @@ class CoinStore:
         row = await cursor.fetchone()
         await cursor.close()
         if row is not None:
-            coin = Coin(bytes32(bytes.fromhex(row[6])), bytes32(bytes.fromhex(row[5])), row[7])
+            coin = Coin(bytes32(bytes.fromhex(row[6])), bytes32(bytes.fromhex(row[5])), uint64.from_bytes(row[7]))
             return CoinRecord(coin, row[1], row[2], row[3], row[4], row[8])
         return None
 
@@ -115,7 +115,7 @@ class CoinStore:
 
         await cursor.close()
         for row in rows:
-            coin = Coin(bytes32(bytes.fromhex(row[6])), bytes32(bytes.fromhex(row[5])), row[7])
+            coin = Coin(bytes32(bytes.fromhex(row[6])), bytes32(bytes.fromhex(row[5])), uint64.from_bytes(row[7]))
             coins.add(CoinRecord(coin, row[1], row[2], row[3], row[4], row[8]))
         return list(coins)
 
@@ -150,7 +150,6 @@ class CoinStore:
             (block_index,),
         )
         await c2.close()
-        await self.coin_record_db.commit()
 
     async def get_unspent_coin_records(self) -> List[CoinRecord]:
         coins = set()
@@ -158,7 +157,7 @@ class CoinStore:
         rows = await cursor.fetchall()
         await cursor.close()
         for row in rows:
-            coin = Coin(bytes32(bytes.fromhex(row[6])), bytes32(bytes.fromhex(row[5])), row[7])
+            coin = Coin(bytes32(bytes.fromhex(row[6])), bytes32(bytes.fromhex(row[5])), uint64.from_bytes(row[7]))
             coins.add(CoinRecord(coin, row[1], row[2], row[3], row[4], row[8]))
         return list(coins)
 
@@ -174,12 +173,11 @@ class CoinStore:
                 int(record.coinbase),
                 str(record.coin.puzzle_hash.hex()),
                 str(record.coin.parent_coin_info.hex()),
-                record.coin.amount,
+                bytes(record.coin.amount),
                 record.timestamp,
             ),
         )
         await cursor.close()
-        await self.coin_record_db.commit()
         self.coin_record_cache[record.coin.name().hex()] = record
         if len(self.coin_record_cache) > self.cache_size:
             while len(self.coin_record_cache) > self.cache_size:

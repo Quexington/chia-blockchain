@@ -2,26 +2,25 @@ import logging
 import time
 import asyncio
 import traceback
-from secrets import token_bytes
 
-from typing import Any, AsyncGenerator, Callable, Optional, List, Dict
+from typing import Any, Callable, Optional, List, Dict
 
 from aiohttp import WSMessage, WSMsgType
 
+from src.cmds.init import chia_full_version_str
+from src.protocols.protocol_message_types import ProtocolMessageTypes
 from src.protocols.shared_protocol import Handshake
-from src.server.outbound_message import Message, NodeType, OutboundMessage, Payload
+from src.server.outbound_message import Message, NodeType, make_msg
 from src.types.peer_info import PeerInfo
-from src.types.sized_bytes import bytes32
-from src.util import cbor
-from src.util.ints import uint16
+from src.types.blockchain_format.sized_bytes import bytes32
+from src.util.ints import uint16, uint8
 from src.util.errors import Err, ProtocolError
 
 # Each message is prepended with LENGTH_BYTES bytes specifying the length
 from src.util.network import class_for_type
 
+# Max size 2^(8*4) which is around 4GiB
 LENGTH_BYTES: int = 4
-
-OnConnectFunc = Optional[Callable[[], AsyncGenerator[OutboundMessage, None]]]
 
 
 class WSChiaConnection:
@@ -78,60 +77,77 @@ class WSChiaConnection:
         self.incoming_queue: asyncio.Queue = incoming_queue
         self.outgoing_queue: asyncio.Queue = asyncio.Queue()
 
-        self.inbound_task = None
-        self.outbound_task = None
-        self.active = False  # once handshake is successful this will be changed to True
-        self.close_event = close_event
+        self.inbound_task: Optional[asyncio.Task] = None
+        self.outbound_task: Optional[asyncio.Task] = None
+        self.active: bool = False  # once handshake is successful this will be changed to True
+        self.close_event: asyncio.Event = close_event
         self.session = session
         self.close_callback = close_callback
 
         self.pending_requests: Dict[bytes32, asyncio.Event] = {}
-        self.request_results: Dict[bytes32, Payload] = {}
+        self.request_results: Dict[bytes32, Message] = {}
         self.closed = False
-        self.connection_type = None
+        self.connection_type: Optional[NodeType] = None
+        self.request_nonce: uint16 = uint16(0)
 
-    async def perform_handshake(self, network_id, protocol_version, server_port, local_type):
+    async def perform_handshake(
+        self, network_id: bytes32, protocol_version: str, server_port: int, local_type: NodeType
+    ):
         if self.is_outbound:
-            outbound_handshake = Message(
-                "handshake",
+            outbound_handshake = make_msg(
+                ProtocolMessageTypes.handshake,
                 Handshake(
                     network_id,
                     protocol_version,
+                    chia_full_version_str(),
                     uint16(server_port),
-                    local_type,
+                    uint8(local_type.value),
                 ),
             )
-            payload = Payload(outbound_handshake, None)
-            await self._send_message(payload)
-            payload = await self._read_one_message()
-            inbound_handshake = Handshake(**payload.msg.data)
-            if payload.msg.function != "handshake" or not inbound_handshake or not inbound_handshake.node_type:
+            assert outbound_handshake is not None
+            await self._send_message(outbound_handshake)
+            inbound_handshake_msg = await self._read_one_message()
+            if inbound_handshake_msg is None:
                 raise ProtocolError(Err.INVALID_HANDSHAKE)
-            if inbound_handshake.version != protocol_version:
+            inbound_handshake = Handshake.from_bytes(inbound_handshake_msg.data)
+            if ProtocolMessageTypes(inbound_handshake_msg.type) != ProtocolMessageTypes.handshake:
+                raise ProtocolError(Err.INVALID_HANDSHAKE)
+            if inbound_handshake.protocol_version != protocol_version:
                 raise ProtocolError(Err.INCOMPATIBLE_PROTOCOL_VERSION)
-            self.peer_server_port = int(inbound_handshake.server_port)
-            self.connection_type = inbound_handshake.node_type
+            if inbound_handshake.network_id != network_id:
+                raise ProtocolError(Err.INCOMPATIBLE_NETWORK_ID)
+
+            self.peer_server_port = inbound_handshake.server_port
+            self.connection_type = NodeType(inbound_handshake.node_type)
 
         else:
-            payload = await self._read_one_message()
-            inbound_handshake = Handshake(**payload.msg.data)
-            if payload.msg.function != "handshake" or not inbound_handshake or not inbound_handshake.node_type:
+            try:
+                message = await self._read_one_message()
+            except Exception:
                 raise ProtocolError(Err.INVALID_HANDSHAKE)
-            if inbound_handshake.version != protocol_version:
+
+            if message is None:
+                raise ProtocolError(Err.INVALID_HANDSHAKE)
+            inbound_handshake = Handshake.from_bytes(message.data)
+            if ProtocolMessageTypes(message.type) != ProtocolMessageTypes.handshake:
+                raise ProtocolError(Err.INVALID_HANDSHAKE)
+            if inbound_handshake.protocol_version != protocol_version:
                 raise ProtocolError(Err.INCOMPATIBLE_PROTOCOL_VERSION)
-            outbound_handshake = Message(
-                "handshake",
+            if inbound_handshake.network_id != network_id:
+                raise ProtocolError(Err.INCOMPATIBLE_NETWORK_ID)
+            outbound_handshake = make_msg(
+                ProtocolMessageTypes.handshake,
                 Handshake(
                     network_id,
                     protocol_version,
+                    chia_full_version_str(),
                     uint16(server_port),
-                    local_type,
+                    uint8(local_type.value),
                 ),
             )
-            payload = Payload(outbound_handshake, None)
-            await self._send_message(payload)
-            self.peer_server_port = int(inbound_handshake.server_port)
-            self.connection_type = inbound_handshake.node_type
+            await self._send_message(outbound_handshake)
+            self.peer_server_port = inbound_handshake.server_port
+            self.connection_type = NodeType(inbound_handshake.node_type)
 
         self.outbound_task = asyncio.create_task(self.outbound_handler())
         self.inbound_task = asyncio.create_task(self.inbound_handler())
@@ -181,14 +197,14 @@ class WSChiaConnection:
     async def inbound_handler(self):
         try:
             while not self.closed:
-                payload: Payload = await self._read_one_message()
-                if payload is not None:
-                    if payload.id in self.pending_requests:
-                        self.request_results[payload.id] = payload
-                        event = self.pending_requests[payload.id]
+                message: Message = await self._read_one_message()
+                if message is not None:
+                    if message.id in self.pending_requests:
+                        self.request_results[message.id] = message
+                        event = self.pending_requests[message.id]
                         event.set()
                     else:
-                        await self.incoming_queue.put((payload, self))
+                        await self.incoming_queue.put((message, self))
                 else:
                     continue
         except asyncio.CancelledError:
@@ -202,8 +218,7 @@ class WSChiaConnection:
         """ Send message sends a message with no tracking / callback. """
         if self.closed:
             return
-        payload = Payload(message, None)
-        await self.outgoing_queue.put(payload)
+        await self.outgoing_queue.put(message)
 
     def __getattr__(self, attr_name: str):
         # TODO KWARGS
@@ -213,9 +228,9 @@ class WSChiaConnection:
                 timeout = kwargs["timeout"]
             attribute = getattr(class_for_type(self.connection_type), attr_name, None)
             if attribute is None:
-                raise AttributeError(f"bad attribute {attr_name}")
+                raise AttributeError(f"Node type {self.connection_type} does not have method {attr_name}")
 
-            msg = Message(attr_name, args[0])
+            msg = Message(uint8(getattr(ProtocolMessageTypes, attr_name).value), args[0], None)
             request_start_t = time.time()
             result = await self.create_request(msg, timeout)
             self.log.debug(
@@ -223,7 +238,7 @@ class WSChiaConnection:
                 f"None? {result is None}"
             )
             if result is not None:
-                ret_attr = getattr(class_for_type(self.local_type), result.function, None)
+                ret_attr = getattr(class_for_type(self.local_type), ProtocolMessageTypes(result.type).name, None)
 
                 req_annotations = ret_attr.__annotations__
                 req = None
@@ -233,41 +248,48 @@ class WSChiaConnection:
                     else:
                         req = req_annotations[key]
                 assert req is not None
-                result = req(**result.data)
+                result = req.from_bytes(result.data)
             return result
 
         return invoke
 
-    async def create_request(self, message: Message, timeout: int = 15):
+    async def create_request(self, message_no_id: Message, timeout: int) -> Optional[Message]:
         """ Sends a message and waits for a response. """
         if self.closed:
             return None
 
+        # We will wait for this event, it will be set either by the response, or the timeout
         event = asyncio.Event()
-        payload = Payload(message, token_bytes(8))
 
-        self.pending_requests[payload.id] = event
-        await self.outgoing_queue.put(payload)
+        # The request nonce is an integer between 0 and 2**16 - 1, which is used to match requests to responses
+        request_id = self.request_nonce
+        self.request_nonce = uint16(self.request_nonce + 1) if self.request_nonce != (2 ** 16 - 1) else uint16(0)
 
+        message = Message(message_no_id.type, message_no_id.data, request_id)
+
+        self.pending_requests[message.id] = event
+        await self.outgoing_queue.put(message)
+
+        # If the timeout passes, we set the event
         async def time_out(req_id, req_timeout):
             await asyncio.sleep(req_timeout)
             if req_id in self.pending_requests:
                 self.pending_requests[req_id].set()
 
-        asyncio.create_task(time_out(payload.id, timeout))
+        asyncio.create_task(time_out(message.id, timeout))
         await event.wait()
 
-        self.pending_requests.pop(payload.id)
+        self.pending_requests.pop(message.id)
         result: Optional[Message] = None
-        if payload.id in self.request_results:
-            result_payload: Payload = self.request_results[payload.id]
-            result = result_payload.msg
-            self.log.info(f"<- {result_payload.msg.function} from: {self.peer_host}:{self.peer_port}")
-            self.request_results.pop(payload.id)
+        if message.id in self.request_results:
+            result = self.request_results[message.id]
+            assert result is not None
+            self.log.info(f"<- {ProtocolMessageTypes(result.type).name} from: {self.peer_host}:{self.peer_port}")
+            self.request_results.pop(result.id)
 
         return result
 
-    async def reply_to_request(self, response: Payload):
+    async def reply_to_request(self, response: Message):
         if self.closed:
             return
         await self.outgoing_queue.put(response)
@@ -276,18 +298,17 @@ class WSChiaConnection:
         if self.closed:
             return
         for message in messages:
-            payload = Payload(message, None)
-            await self.outgoing_queue.put(payload)
+            await self.outgoing_queue.put(message)
 
-    async def _send_message(self, payload: Payload):
-        encoded: bytes = cbor.dumps({"f": payload.msg.function, "d": payload.msg.data, "i": payload.id})
+    async def _send_message(self, message: Message):
+        encoded: bytes = bytes(message)
         size = len(encoded)
         assert len(encoded) < (2 ** (LENGTH_BYTES * 8))
         await self.ws.send_bytes(encoded)
-        self.log.info(f"-> {payload.msg.function} to peer {self.peer_host} {self.peer_node_id}")
+        self.log.info(f"-> {ProtocolMessageTypes(message.type).name} to peer {self.peer_host} {self.peer_node_id}")
         self.bytes_written += size
 
-    async def _read_one_message(self) -> Optional[Payload]:
+    async def _read_one_message(self) -> Optional[Message]:
         try:
             message: WSMessage = await self.ws.receive(30)
         except asyncio.TimeoutError:
@@ -325,13 +346,10 @@ class WSChiaConnection:
                 return None
         elif message.type == WSMsgType.BINARY:
             data = message.data
-            full_message_loaded: Any = cbor.loads(data)
+            full_message_loaded: Message = Message.from_bytes(data)
             self.bytes_read += len(data)
             self.last_message_time = time.time()
-            msg = Message(full_message_loaded["f"], full_message_loaded["d"])
-            payload_id = full_message_loaded["i"]
-            payload = Payload(msg, payload_id)
-            return payload
+            return full_message_loaded
         else:
             self.log.error(f"Unexpected WebSocket message type: {message}")
             asyncio.create_task(self.close())

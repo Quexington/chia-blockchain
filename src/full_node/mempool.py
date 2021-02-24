@@ -2,18 +2,16 @@ from typing import List, Dict
 
 from sortedcontainers import SortedDict
 
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.mempool_item import MempoolItem
-from src.types.sized_bytes import bytes32
-from src.util.ints import uint64
+from src.types.blockchain_format.sized_bytes import bytes32
 
 
 class Mempool:
     spends: Dict[bytes32, MempoolItem]
-    sorted_spends: SortedDict
+    sorted_spends: SortedDict  # Dict[float, Dict[bytes32, MempoolItem]]
     additions: Dict[bytes32, MempoolItem]
     removals: Dict[bytes32, MempoolItem]
-    min_fee: uint64
     size: int
 
     # if new min fee is added
@@ -23,7 +21,6 @@ class Mempool:
         self.spends = {}
         self.additions = {}
         self.removals = {}
-        self.min_fee = uint64(0)
         self.sorted_spends = SortedDict()
         self.size = size
         return self

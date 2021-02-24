@@ -4,10 +4,10 @@ from typing import List, Optional
 from blspy import G2Element
 
 from src.types.end_of_slot_bundle import EndOfSubSlotBundle
-from src.types.proof_of_space import ProofOfSpace
-from src.types.reward_chain_sub_block import RewardChainSubBlock
-from src.types.sized_bytes import bytes32
-from src.types.vdf import VDFProof, VDFInfo
+from src.types.blockchain_format.proof_of_space import ProofOfSpace
+from src.types.blockchain_format.reward_chain_block import RewardChainBlock
+from src.types.blockchain_format.sized_bytes import bytes32
+from src.types.blockchain_format.vdf import VDFProof, VDFInfo
 from src.util.ints import uint8, uint64, uint32
 from src.util.streamable import Streamable, streamable
 
@@ -16,7 +16,7 @@ from src.util.streamable import Streamable, streamable
 @streamable
 class SubEpochData(Streamable):
     reward_chain_hash: bytes32
-    num_sub_blocks_overflow: uint8
+    num_blocks_overflow: uint8
     new_sub_slot_iters: Optional[uint64]
     new_difficulty: Optional[uint64]
 
@@ -80,7 +80,7 @@ class SubEpochSegments(Streamable):
 @streamable
 class ProofBlockHeader(Streamable):
     finished_sub_slots: List[EndOfSubSlotBundle]
-    reward_chain_sub_block: RewardChainSubBlock
+    reward_chain_block: RewardChainBlock
 
 
 @dataclass(frozen=True)

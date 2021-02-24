@@ -4,6 +4,7 @@ import ssl
 import time
 from ipaddress import ip_address, IPv6Address
 from pathlib import Path
+from secrets import token_bytes
 from typing import Any, List, Dict, Callable, Optional, Set, Tuple
 
 from aiohttp.web_app import Application
@@ -13,12 +14,13 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 
+from src.protocols.protocol_message_types import ProtocolMessageTypes
 from src.server.introducer_peers import IntroducerPeers
-from src.server.outbound_message import NodeType, Message, Payload
+from src.server.outbound_message import NodeType, Message
 from src.server.ssl_context import private_ssl_paths, public_ssl_paths
 from src.server.ws_connection import WSChiaConnection
 from src.types.peer_info import PeerInfo
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.errors import ProtocolError, Err
 from src.util.ints import uint16
 from src.protocols.shared_protocol import protocol_version
@@ -56,7 +58,7 @@ class ChiaServer:
         api: Any,
         local_type: NodeType,
         ping_interval: int,
-        network_id: str,
+        network_id: bytes32,
         root_path: Path,
         config: Dict,
         private_ca_crt_key: Tuple[Path, Path],
@@ -123,6 +125,8 @@ class ChiaServer:
         self.site_shutdown_task: Optional[asyncio.Task] = None
         self.app_shut_down_task: Optional[asyncio.Task] = None
         self.received_message_callback: Optional[Callable] = None
+        self.api_tasks: Dict[bytes32, asyncio.Task] = {}
+        self.tasks_from_peer: Dict[bytes32, Set[bytes32]] = {}
 
     def my_id(self):
         """ If node has public cert use that one for id, if not use private."""
@@ -194,7 +198,7 @@ class ChiaServer:
         peer_id = bytes32(der_cert.fingerprint(hashes.SHA256()))
         if peer_id == self.node_id:
             return ws
-
+        connection: Optional[WSChiaConnection] = None
         try:
             connection = WSChiaConnection(
                 self._local_type,
@@ -227,8 +231,15 @@ class ChiaServer:
                 if self._local_type is NodeType.INTRODUCER and connection.connection_type is NodeType.FULL_NODE:
                     self.introducer_peers.add(connection.get_peer_info())
         except ProtocolError as e:
-            await connection.close()
-            if e.code == Err.SELF_CONNECTION:
+            if connection is not None:
+                await connection.close()
+            if e.code == Err.INVALID_HANDSHAKE:
+                self.log.warning("Invalid handshake with peer. Maybe the peer is running old software.")
+                close_event.set()
+            elif e.code == Err.INCOMPATIBLE_NETWORK_ID:
+                self.log.warning("Incompatible network ID. Maybe the peer is on another network")
+                close_event.set()
+            elif e.code == Err.SELF_CONNECTION:
                 close_event.set()
             else:
                 error_stack = traceback.format_exc()
@@ -288,6 +299,7 @@ class ChiaServer:
                 self.chia_ca_crt_path, self.chia_ca_key_path, self.p2p_crt_path, self.p2p_key_path
             )
         session = None
+        connection: Optional[WSChiaConnection] = None
         try:
             timeout = ClientTimeout(total=10)
             session = ClientSession(timeout=timeout)
@@ -314,7 +326,9 @@ class ChiaServer:
                 cert_bytes = transport._ssl_protocol._extra["ssl_object"].getpeercert(True)  # type: ignore
                 der_cert = x509.load_der_x509_certificate(cert_bytes, default_backend())
                 peer_id = bytes32(der_cert.fingerprint(hashes.SHA256()))
-                assert peer_id != self.node_id
+                if peer_id == self.node_id:
+                    raise RuntimeError(f"Trying to connect to a peer ({target_node}) with the same peer_id: {peer_id}")
+
                 connection = WSChiaConnection(
                     self._local_type,
                     ws,
@@ -349,8 +363,13 @@ class ChiaServer:
         except client_exceptions.ClientConnectorError as e:
             self.log.info(f"{e}")
         except ProtocolError as e:
-            await connection.close()
-            if e.code == Err.SELF_CONNECTION:
+            if connection is not None:
+                await connection.close()
+            if e.code == Err.INVALID_HANDSHAKE:
+                self.log.warning(f"Invalid handshake with peer {target_node}. Maybe the peer is running old software.")
+            elif e.code == Err.INCOMPATIBLE_NETWORK_ID:
+                self.log.warning("Incompatible network ID. Maybe the peer is on another network")
+            elif e.code == Err.SELF_CONNECTION:
                 pass
             else:
                 error_stack = traceback.format_exc()
@@ -372,10 +391,25 @@ class ChiaServer:
             if connection.peer_node_id in self.connection_by_type[connection.connection_type]:
                 self.connection_by_type[connection.connection_type].pop(connection.peer_node_id)
         else:
-            self.log.error(f"Invalid connection type for connection {connection}, while closing")
+            # This means the handshake was enver finished with this peer
+            self.log.debug(
+                f"Invalid connection type for connection {connection.peer_host},"
+                f" while closing. Handshake never finished."
+            )
         on_disconnect = getattr(self.node, "on_disconnect", None)
         if on_disconnect is not None:
             on_disconnect(connection)
+
+        self.cancel_tasks_from_peer(connection.peer_node_id)
+
+    def cancel_tasks_from_peer(self, peer_id: bytes32):
+        if peer_id not in self.tasks_from_peer:
+            return
+
+        task_ids = self.tasks_from_peer[peer_id]
+        for task_id in task_ids:
+            task = self.api_tasks[task_id]
+            task.cancel()
 
     async def incoming_api_task(self):
         self.tasks = set()
@@ -384,43 +418,40 @@ class ChiaServer:
             if payload_inc is None or connection_inc is None:
                 continue
 
-            async def api_call(payload: Payload, connection: WSChiaConnection):
+            async def api_call(full_message: Message, connection: WSChiaConnection, task_id):
                 start_time = time.time()
                 try:
                     if self.received_message_callback is not None:
                         await self.received_message_callback(connection)
-                    full_message = payload.msg
                     connection.log.info(
-                        f"<- {full_message.function} from peer {connection.peer_node_id} {connection.peer_host}"
+                        f"<- {ProtocolMessageTypes(full_message.type).name} from peer "
+                        f"{connection.peer_node_id} {connection.peer_host}"
                     )
-                    if len(full_message.function) == 0 or full_message.function.startswith("_"):
-                        # This prevents remote calling of private methods that start with "_"
-                        self.log.error(f"Non existing function: {full_message.function}")
-                        raise ProtocolError(Err.INVALID_PROTOCOL_MESSAGE, [full_message.function])
+                    message_type: str = ProtocolMessageTypes(full_message.type).name
 
-                    f = getattr(self.api, full_message.function, None)
+                    f = getattr(self.api, message_type, None)
 
                     if f is None:
-                        self.log.error(f"Non existing function: {full_message.function}")
-                        raise ProtocolError(Err.INVALID_PROTOCOL_MESSAGE, [full_message.function])
+                        self.log.error(f"Non existing function: {message_type}")
+                        raise ProtocolError(Err.INVALID_PROTOCOL_MESSAGE, [message_type])
 
                     if not hasattr(f, "api_function"):
-                        self.log.error(f"Peer trying to call non api function {full_message.function}")
-                        raise ProtocolError(Err.INVALID_PROTOCOL_MESSAGE, [full_message.function])
+                        self.log.error(f"Peer trying to call non api function {message_type}")
+                        raise ProtocolError(Err.INVALID_PROTOCOL_MESSAGE, [message_type])
 
                     if hasattr(f, "peer_required"):
-                        response: Optional[Message] = await f(full_message.data, connection)
+                        coroutine = f(full_message.data, connection)
                     else:
-                        response = await f(full_message.data)
+                        coroutine = f(full_message.data)
+                    response: Optional[Message] = await asyncio.wait_for(coroutine, timeout=300)
                     connection.log.debug(
-                        f"Time taken to process {full_message.function} from {connection.peer_node_id} is "
+                        f"Time taken to process {message_type} from {connection.peer_node_id} is "
                         f"{time.time() - start_time} seconds"
                     )
 
                     if response is not None:
-                        payload_id = payload.id
-                        response_payload = Payload(response, payload_id)
-                        await connection.reply_to_request(response_payload)
+                        response_message = Message(response.type, response.data, full_message.id)
+                        await connection.reply_to_request(response_message)
                 except Exception as e:
                     if self.connection_close_task is None:
                         tb = traceback.format_exc()
@@ -429,8 +460,18 @@ class ChiaServer:
                         connection.log.debug(f"Exception: {e} while closing connection")
                         pass
                     await connection.close()
+                finally:
+                    if task_id in self.api_tasks:
+                        self.api_tasks.pop(task_id)
+                    if task_id in self.tasks_from_peer[connection.peer_node_id]:
+                        self.tasks_from_peer[connection.peer_node_id].remove(task_id)
 
-            asyncio.create_task(api_call(payload_inc, connection_inc))
+            task_id = token_bytes()
+            api_task = asyncio.create_task(api_call(payload_inc, connection_inc, task_id))
+            self.api_tasks[task_id] = api_task
+            if connection_inc.peer_node_id not in self.tasks_from_peer:
+                self.tasks_from_peer[connection_inc.peer_node_id] = set()
+            self.tasks_from_peer[connection_inc.peer_node_id].add(task_id)
 
     async def send_to_others(
         self,
@@ -496,6 +537,8 @@ class ChiaServer:
             self.site_shutdown_task = asyncio.create_task(self.runner.cleanup())
         if self.app is not None:
             self.app_shut_down_task = asyncio.create_task(self.app.shutdown())
+        for task_id, task in self.api_tasks.items():
+            task.cancel()
 
         self.shut_down_event.set()
         self.incoming_task.cancel()

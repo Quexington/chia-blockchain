@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
-from src.types.coin import Coin
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.coin import Coin
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.streamable import Streamable, streamable
 from src.util.ints import uint32
 from src.wallet.util.wallet_types import WalletType
@@ -16,9 +16,7 @@ class WalletCoinRecord(Streamable):
     """
 
     coin: Coin
-    confirmed_block_sub_height: uint32
     confirmed_block_height: uint32
-    spent_block_sub_height: uint32
     spent_block_height: uint32
     spent: bool
     coinbase: bool

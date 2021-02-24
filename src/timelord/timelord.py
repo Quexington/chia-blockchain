@@ -11,27 +11,28 @@ from chiavdf import create_discriminant
 from src.consensus.constants import ConsensusConstants
 from src.consensus.pot_iterations import (
     calculate_sp_iters,
-    is_overflow_sub_block,
+    is_overflow_block,
 )
 from src.protocols import timelord_protocol
-from src.server.outbound_message import NodeType, Message
+from src.protocols.protocol_message_types import ProtocolMessageTypes
+from src.server.outbound_message import NodeType, make_msg
 from src.server.server import ChiaServer
-from src.timelord.iters_from_sub_block import iters_from_sub_block
+from src.timelord.iters_from_block import iters_from_block
 from src.timelord.timelord_state import LastState
 from src.timelord.types import Chain, IterationType, StateType
-from src.types.classgroup import ClassgroupElement
+from src.types.blockchain_format.classgroup import ClassgroupElement
 from src.types.end_of_slot_bundle import EndOfSubSlotBundle
-from src.types.reward_chain_sub_block import RewardChainSubBlock
-from src.types.sized_bytes import bytes32
-from src.types.slots import (
+from src.types.blockchain_format.reward_chain_block import RewardChainBlock
+from src.types.blockchain_format.sized_bytes import bytes32
+from src.types.blockchain_format.slots import (
     ChallengeChainSubSlot,
     InfusedChallengeChainSubSlot,
     RewardChainSubSlot,
     SubSlotProofs,
 )
-from src.types.vdf import VDFInfo, VDFProof
-from src.util.ints import uint64, uint8, int512, uint32
-from src.types.sub_epoch_summary import SubEpochSummary
+from src.types.blockchain_format.vdf import VDFInfo, VDFProof
+from src.util.ints import uint64, uint8, uint32
+from src.types.blockchain_format.sub_epoch_summary import SubEpochSummary
 
 log = logging.getLogger(__name__)
 
@@ -56,13 +57,13 @@ class Timelord:
         # Chains that currently accept iterations.
         self.allows_iters: List[Chain] = []
         # Last peak received, None if it's already processed.
-        self.new_peak: Optional[timelord_protocol.NewPeak] = None
+        self.new_peak: Optional[timelord_protocol.NewPeakTimelord] = None
         # Last end of subslot bundle, None if we built a peak on top of it.
         self.new_subslot_end: Optional[EndOfSubSlotBundle] = None
         # Last state received. Can either be a new peak or a new EndOfSubslotBundle.
         self.last_state: LastState = LastState(self.constants)
         # Unfinished block info, iters adjusted to the last peak.
-        self.unfinished_blocks: List[timelord_protocol.NewUnfinishedSubBlock] = []
+        self.unfinished_blocks: List[timelord_protocol.NewUnfinishedBlock] = []
         # Signage points iters, adjusted to the last peak.
         self.signage_point_iters: List[Tuple[uint64, uint8]] = []
         # For each chain, send those info when the process spawns.
@@ -73,7 +74,7 @@ class Timelord:
         # List of proofs finished.
         self.proofs_finished: List[Tuple[Chain, VDFInfo, VDFProof]] = []
         # Data to send at vdf_client initialization.
-        self.overflow_blocks: List[timelord_protocol.NewUnfinishedSubBlock] = []
+        self.overflow_blocks: List[timelord_protocol.NewUnfinishedBlock] = []
 
         self.process_communication_tasks: List[asyncio.Task] = []
         self.main_loop = None
@@ -142,13 +143,13 @@ class Timelord:
         except ConnectionResetError as e:
             log.error(f"{e}")
 
-    def _can_infuse_unfinished_block(self, block: timelord_protocol.NewUnfinishedSubBlock) -> Optional[uint64]:
+    def _can_infuse_unfinished_block(self, block: timelord_protocol.NewUnfinishedBlock) -> Optional[uint64]:
         sub_slot_iters = self.last_state.get_sub_slot_iters()
         difficulty = self.last_state.get_difficulty()
         ip_iters = self.last_state.get_last_ip()
-        rc_block = block.reward_chain_sub_block
+        rc_block = block.reward_chain_block
         try:
-            block_sp_iters, block_ip_iters = iters_from_sub_block(
+            block_sp_iters, block_ip_iters = iters_from_block(
                 self.constants,
                 rc_block,
                 sub_slot_iters,
@@ -158,7 +159,7 @@ class Timelord:
             log.warning(f"Received invalid unfinished block: {e}.")
             return None
         block_sp_total_iters = self.last_state.total_iters - ip_iters + block_sp_iters
-        if is_overflow_sub_block(self.constants, block.reward_chain_sub_block.signage_point_index):
+        if is_overflow_block(self.constants, block.reward_chain_block.signage_point_index):
             block_sp_total_iters -= self.last_state.get_sub_slot_iters()
         found_index = -1
         for index, (rc, total_iters) in enumerate(self.last_state.reward_challenge_cache):
@@ -220,7 +221,7 @@ class Timelord:
                 new_unfinished_blocks.append(block)
                 for chain in [Chain.REWARD_CHAIN, Chain.CHALLENGE_CHAIN]:
                     self.iters_to_submit[chain].append(new_block_iters)
-                if self.last_state.get_deficit() < self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK:
+                if self.last_state.get_deficit() < self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK:
                     self.iters_to_submit[Chain.INFUSED_CHALLENGE_CHAIN].append(new_block_iters)
                 self.iteration_to_proof_type[new_block_iters] = IterationType.INFUSION_POINT
         # Remove all unfinished blocks that have already passed.
@@ -238,7 +239,7 @@ class Timelord:
         # TODO: handle the special case when infusion point is the end of subslot.
         left_subslot_iters = sub_slot_iters - ip_iters
 
-        if self.last_state.get_deficit() < self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK:
+        if self.last_state.get_deficit() < self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK:
             self.iters_to_submit[Chain.INFUSED_CHALLENGE_CHAIN].append(left_subslot_iters)
         self.iters_to_submit[Chain.CHALLENGE_CHAIN].append(left_subslot_iters)
         self.iters_to_submit[Chain.REWARD_CHAIN].append(left_subslot_iters)
@@ -357,7 +358,7 @@ class Timelord:
                     rc_proof,
                 )
                 if self.server is not None:
-                    msg = Message("new_signage_point_vdf", response)
+                    msg = make_msg(ProtocolMessageTypes.new_signage_point_vdf, response)
                     await self.server.send_to_all([msg], NodeType.FULL_NODE)
                 # Cleanup the signage point from memory.
                 to_remove.append((signage_iter, signage_point_index))
@@ -398,9 +399,9 @@ class Timelord:
                 ip_iters = None
                 for unfinished_block in self.unfinished_blocks:
                     try:
-                        _, ip_iters = iters_from_sub_block(
+                        _, ip_iters = iters_from_block(
                             self.constants,
-                            unfinished_block.reward_chain_sub_block,
+                            unfinished_block.reward_chain_block,
                             self.last_state.get_sub_slot_iters(),
                             self.last_state.get_difficulty(),
                         )
@@ -411,7 +412,7 @@ class Timelord:
                         break
                 if block is not None:
                     ip_total_iters = self.last_state.get_total_iters() + iteration
-                    challenge = block.reward_chain_sub_block.get_hash()
+                    challenge = block.reward_chain_block.get_hash()
                     icc_info: Optional[VDFInfo] = None
                     icc_proof: Optional[VDFProof] = None
                     cc_info: Optional[VDFInfo] = None
@@ -435,7 +436,7 @@ class Timelord:
                     if rc_info.challenge != self.last_state.get_challenge(Chain.REWARD_CHAIN):
                         log.warning(
                             f"Do not have correct challenge {self.last_state.get_challenge(Chain.REWARD_CHAIN).hex()} "
-                            f"has {rc_info.challenge}, partial hash {block.reward_chain_sub_block.get_hash()}"
+                            f"has {rc_info.challenge}, partial hash {block.reward_chain_block.get_hash()}"
                         )
                         # This proof is on an outdated challenge, so don't use it
                         continue
@@ -443,11 +444,11 @@ class Timelord:
                     self.unfinished_blocks.remove(block)
                     self.total_infused += 1
                     log.info(f"Generated infusion point for challenge: {challenge} iterations: {iteration}.")
-                    if not self.last_state.can_infuse_sub_block():
-                        log.warning("Too many sub-blocks, cannot infuse, discarding")
-                        # Too many sub blocks
+                    if not self.last_state.can_infuse_block():
+                        log.warning("Too many blocks, cannot infuse, discarding")
+                        # Too many blocks
                         return
-                    overflow = is_overflow_sub_block(self.constants, block.reward_chain_sub_block.signage_point_index)
+                    overflow = is_overflow_block(self.constants, block.reward_chain_block.signage_point_index)
 
                     cc_info = dataclasses.replace(cc_info, number_of_iterations=ip_iters)
                     response = timelord_protocol.NewInfusionPointVDF(
@@ -459,7 +460,7 @@ class Timelord:
                         icc_info,
                         icc_proof,
                     )
-                    msg = Message("new_infusion_point_vdf", response)
+                    msg = make_msg(ProtocolMessageTypes.new_infusion_point_vdf, response)
                     if self.server is not None:
                         await self.server.send_to_all([msg], NodeType.FULL_NODE)
 
@@ -478,61 +479,61 @@ class Timelord:
                         + calculate_sp_iters(
                             self.constants,
                             block.sub_slot_iters,
-                            block.reward_chain_sub_block.signage_point_index,
+                            block.reward_chain_block.signage_point_index,
                         )
                         - (block.sub_slot_iters if overflow else 0)
                     )
                     if self.last_state.state_type == StateType.FIRST_SUB_SLOT:
-                        is_block = True
-                        sub_block_height: uint32 = uint32(0)
+                        is_transaction_block = True
+                        height: uint32 = uint32(0)
                     else:
-                        is_block = self.last_state.get_last_block_total_iters() < sp_total_iters
-                        sub_block_height: uint32 = self.last_state.get_height() + 1
+                        is_transaction_block = self.last_state.get_last_block_total_iters() < sp_total_iters
+                        height: uint32 = self.last_state.get_height() + 1
 
-                    if sub_block_height < 5:
-                        # Don't directly update our state for the first few sub-blocks, because we cannot validate
+                    if height < 5:
+                        # Don't directly update our state for the first few blocks, because we cannot validate
                         # whether the pre-farm is correct
                         return
 
-                    new_reward_chain_sub_block = RewardChainSubBlock(
+                    new_reward_chain_block = RewardChainBlock(
                         self.last_state.get_weight() + block.difficulty,
-                        sub_block_height,
+                        height,
                         ip_total_iters,
-                        block.reward_chain_sub_block.signage_point_index,
-                        block.reward_chain_sub_block.pos_ss_cc_challenge_hash,
-                        block.reward_chain_sub_block.proof_of_space,
-                        block.reward_chain_sub_block.challenge_chain_sp_vdf,
-                        block.reward_chain_sub_block.challenge_chain_sp_signature,
+                        block.reward_chain_block.signage_point_index,
+                        block.reward_chain_block.pos_ss_cc_challenge_hash,
+                        block.reward_chain_block.proof_of_space,
+                        block.reward_chain_block.challenge_chain_sp_vdf,
+                        block.reward_chain_block.challenge_chain_sp_signature,
                         cc_info,
-                        block.reward_chain_sub_block.reward_chain_sp_vdf,
-                        block.reward_chain_sub_block.reward_chain_sp_signature,
+                        block.reward_chain_block.reward_chain_sp_vdf,
+                        block.reward_chain_block.reward_chain_sp_signature,
                         rc_info,
                         icc_info,
-                        is_block,
+                        is_transaction_block,
                     )
                     if self.last_state.state_type == StateType.FIRST_SUB_SLOT:
                         # Genesis
-                        new_deficit = self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK - 1
-                    elif overflow and self.last_state.deficit == self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK:
+                        new_deficit = self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK - 1
+                    elif overflow and self.last_state.deficit == self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK:
                         if self.last_state.peak is not None:
                             assert self.last_state.subslot_end is None
-                            # This means the previous sub-block is also an overflow sub-block, and did not manage
+                            # This means the previous block is also an overflow block, and did not manage
                             # to lower the deficit, therefore we cannot lower it either. (new slot)
-                            new_deficit = self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK
+                            new_deficit = self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK
                         else:
                             # This means we are the first infusion in this sub-slot. This may be a new slot or not.
                             assert self.last_state.subslot_end is not None
                             if self.last_state.subslot_end.infused_challenge_chain is None:
                                 # There is no ICC, which means we are not finishing a slot. We can reduce the deficit.
-                                new_deficit = self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK - 1
+                                new_deficit = self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK - 1
                             else:
                                 # There is an ICC, which means we are finishing a slot. Different slot, so can't change
                                 # the deficit
-                                new_deficit = self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK
+                                new_deficit = self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK
                     else:
                         new_deficit = max(self.last_state.deficit - 1, 0)
 
-                    if new_deficit == self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK - 1:
+                    if new_deficit == self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK - 1:
                         last_csb_or_eos = ip_total_iters
                     else:
                         last_csb_or_eos = self.last_state.last_challenge_sb_or_eos_total_iters
@@ -542,8 +543,8 @@ class Timelord:
                     else:
                         new_sub_epoch_summary = block.sub_epoch_summary
 
-                    self.new_peak = timelord_protocol.NewPeak(
-                        new_reward_chain_sub_block,
+                    self.new_peak = timelord_protocol.NewPeakTimelord(
+                        new_reward_chain_block,
                         block.difficulty,
                         new_deficit,
                         block.sub_slot_iters,
@@ -640,8 +641,8 @@ class Timelord:
             cc_sub_slot = ChallengeChainSubSlot(cc_vdf, icc_sub_slot_hash, ses_hash, new_sub_slot_iters, new_difficulty)
             eos_deficit: uint8 = (
                 self.last_state.get_deficit()
-                if self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK > self.last_state.get_deficit() > 0
-                else self.constants.MIN_SUB_BLOCKS_PER_CHALLENGE_BLOCK
+                if self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK > self.last_state.get_deficit() > 0
+                else self.constants.MIN_BLOCKS_PER_CHALLENGE_BLOCK
             )
             rc_sub_slot = RewardChainSubSlot(
                 rc_vdf,
@@ -656,8 +657,8 @@ class Timelord:
                 SubSlotProofs(cc_proof, icc_ip_proof, rc_proof),
             )
             if self.server is not None:
-                msg = Message(
-                    "new_end_of_sub_slot_vdf",
+                msg = make_msg(
+                    ProtocolMessageTypes.new_end_of_sub_slot_vdf,
                     timelord_protocol.NewEndOfSubSlotVDF(eos_bundle),
                 )
                 await self.server.send_to_all([msg], NodeType.FULL_NODE)
@@ -756,13 +757,10 @@ class Timelord:
                 writer.write((prefix + str(disc)).encode())
                 await writer.drain()
 
-            # Send (a, b) from 'initial_form'.
-            for num in [initial_form.a, initial_form.b]:
-                prefix_l = len(str(num))
-                prefix_len = len(str(prefix_l))
-                async with self.lock:
-                    writer.write((str(prefix_len) + str(prefix_l) + str(num)).encode())
-                    await writer.drain()
+            # Send initial_form prefixed with its length.
+            async with self.lock:
+                writer.write(bytes([len(initial_form.data)]) + initial_form.data)
+                await writer.drain()
             try:
                 ok = await reader.readexactly(2)
             except (asyncio.IncompleteReadError, ConnectionResetError, Exception) as e:
@@ -831,10 +829,8 @@ class Timelord:
                     proof_bytes: bytes = stdout_bytes_io.read()
 
                     # Verifies our own proof just in case
-                    int_size = (self.constants.DISCRIMINANT_SIZE_BITS + 16) >> 4
-                    a = int.from_bytes(y_bytes[:int_size], "big", signed=True)
-                    b = int.from_bytes(y_bytes[int_size:], "big", signed=True)
-                    output = ClassgroupElement(int512(a), int512(b))
+                    form_size = ClassgroupElement.get_size(self.constants)
+                    output = ClassgroupElement.from_bytes(y_bytes[:form_size])
                     time_taken = time.time() - self.chain_start_time[chain]
                     ips = int(iterations_needed / time_taken * 10) / 10
                     log.info(

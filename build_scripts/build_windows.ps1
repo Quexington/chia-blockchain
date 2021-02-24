@@ -41,12 +41,13 @@ if (-not (Test-Path env:CHIA_INSTALLER_VERSION)) {
   Write-Output "WARNING: No environment variable CHIA_INSTALLER_VERSION set. Using 0.0.0"
   }
 Write-Output "Chia Version is: $env:CHIA_INSTALLER_VERSION"
+Write-Output "SCM Version is: $env:SCM_VERSION"
 Write-Output "   ---"
 
 Write-Output "   ---"
 Write-Output "Build chia-blockchain wheels"
 Write-Output "   ---"
-pip wheel --use-pep517 --only-binary cbor2 --extra-index-url https://download.chia.net/simple/ -f . --wheel-dir=.\build_scripts\win_build .
+pip wheel --use-pep517 --extra-index-url https://download.chia.net/simple/ -f . --wheel-dir=.\build_scripts\win_build .
 
 Write-Output "   ---"
 Write-Output "Install chia-blockchain wheels into venv with pip"
@@ -67,10 +68,10 @@ Write-Output "   ---"
 pyinstaller --log-level INFO daemon_windows.spec
 
 Write-Output "   ---"
-Write-Output "Copy chia executables to electron-react\"
+Write-Output "Copy chia executables to chia-blockchain-gui\"
 Write-Output "   ---"
-Copy-Item "dist\daemon" -Destination "..\electron-react\" -Recurse
-Set-Location -Path "..\electron-react" -PassThru
+Copy-Item "dist\daemon" -Destination "..\chia-blockchain-gui\" -Recurse
+Set-Location -Path "..\chia-blockchain-gui" -PassThru
 
 Write-Output "   ---"
 Write-Output "Prepare Electron packager"

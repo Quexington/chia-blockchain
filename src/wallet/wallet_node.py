@@ -3,17 +3,18 @@ import json
 import time
 import traceback
 from asyncio import Task
-from typing import Dict, Optional, Tuple, List, AsyncGenerator, Callable, Union
+from typing import Dict, Optional, Tuple, List, Callable, Union, Set
 from pathlib import Path
 import socket
 import logging
 from blspy import PrivateKey
 
 from src.consensus.multiprocess_validation import PreValidationResult
-from src.consensus.sub_block_record import SubBlockRecord
+from src.consensus.block_record import BlockRecord
 from src.protocols.full_node_protocol import RequestProofOfWeight, RespondProofOfWeight
+from src.protocols.protocol_message_types import ProtocolMessageTypes
 from src.protocols.wallet_protocol import (
-    RespondSubBlockHeader,
+    RespondBlockHeader,
     RequestAdditions,
     RespondAdditions,
     RespondRemovals,
@@ -23,17 +24,17 @@ from src.protocols.wallet_protocol import (
     RespondHeaderBlocks,
 )
 from src.server.ws_connection import WSChiaConnection
-from src.types.coin import hash_coin_list, Coin
+from src.types.blockchain_format.coin import hash_coin_list, Coin
 from src.types.peer_info import PeerInfo
 from src.util.byte_types import hexstr_to_bytes
 from src.protocols import wallet_protocol
 from src.consensus.constants import ConsensusConstants
 from src.server.server import ChiaServer
-from src.server.outbound_message import OutboundMessage, NodeType, Message
+from src.server.outbound_message import make_msg, NodeType, Message
 from src.server.node_discovery import WalletPeers
 from src.util.errors import ValidationError, Err
 from src.util.ints import uint32, uint128
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.merkle_set import (
     confirm_included_already_hashed,
     confirm_not_included_already_hashed,
@@ -51,8 +52,6 @@ from src.wallet.wallet_state_manager import WalletStateManager
 from src.types.header_block import HeaderBlock
 from src.util.path import path_from_root, mkdir
 from src.util.keychain import Keychain
-
-OutboundMessageGenerator = AsyncGenerator[OutboundMessage, None]
 
 
 class WalletNode:
@@ -73,6 +72,7 @@ class WalletNode:
     state_changed_callback: Optional[Callable]
     syncing: bool
     full_node_peer: Optional[PeerInfo]
+    peer_task: Optional[asyncio.Task]
 
     def __init__(
         self,
@@ -110,6 +110,7 @@ class WalletNode:
         self.sync_task: Optional[Task] = None
         self.new_peak_lock: Optional[asyncio.Lock] = None
         self.logged_in_fingerprint: Optional[int] = None
+        self.peer_task = None
 
     def get_key_for_fingerprint(self, fingerprint):
         private_keys = self.keychain.get_all_private_keys()
@@ -139,7 +140,12 @@ class WalletNode:
             return False
 
         db_path_key_suffix = str(private_key.get_g1().get_fingerprint())
-        path = path_from_root(self.root_path, f"{self.config['database_path']}-{db_path_key_suffix}")
+        db_path_replaced: str = (
+            self.config["database_path"]
+            .replace("CHALLENGE", self.constants.GENESIS_CHALLENGE[:8].hex())
+            .replace("KEY", db_path_key_suffix)
+        )
+        path = path_from_root(self.root_path, db_path_replaced)
         mkdir(path.parent)
 
         self.wallet_state_manager = await WalletStateManager.create(private_key, self.config, path, self.constants)
@@ -202,6 +208,9 @@ class WalletNode:
         if self.sync_task is not None:
             self.sync_task.cancel()
             self.sync_task = None
+        if self.peer_task is not None:
+            self.peer_task.cancel()
+            self.peer_task = None
 
     def _set_state_changed_callback(self, callback: Callable):
         self.state_changed_callback = callback
@@ -225,8 +234,11 @@ class WalletNode:
             action_data = data["data"]["action_data"]
             if action.name == "request_puzzle_solution":
                 coin_name = bytes32(hexstr_to_bytes(action_data["coin_name"]))
-                sub_height = uint32(action_data["sub_height"])
-                msg = Message("request_puzzle_solution", wallet_protocol.RequestPuzzleSolution(coin_name, sub_height))
+                height = uint32(action_data["height"])
+                msg = make_msg(
+                    ProtocolMessageTypes.request_puzzle_solution,
+                    wallet_protocol.RequestPuzzleSolution(coin_name, height),
+                )
                 result.append(msg)
 
         return result
@@ -240,7 +252,7 @@ class WalletNode:
         ):
             return
 
-        for msg in await self._messages_to_resend():
+        for msg, sent_peers in await self._messages_to_resend():
             if (
                 self._shut_down
                 or self.server is None
@@ -248,7 +260,11 @@ class WalletNode:
                 or self.backup_initialized is None
             ):
                 return
-            await self.server.send_to_all([msg], NodeType.FULL_NODE)
+            full_nodes = self.server.get_full_node_connections()
+            for peer in full_nodes:
+                if peer.peer_node_id in sent_peers:
+                    continue
+                await peer.send_message(msg)
 
         for msg in await self._action_messages():
             if (
@@ -260,21 +276,24 @@ class WalletNode:
                 return
             await self.server.send_to_all([msg], NodeType.FULL_NODE)
 
-    async def _messages_to_resend(self) -> List[Message]:
+    async def _messages_to_resend(self) -> List[Tuple[Message, Set[bytes32]]]:
         if self.wallet_state_manager is None or self.backup_initialized is False or self._shut_down:
             return []
-        messages: List[Message] = []
+        messages: List[Tuple[Message, Set[bytes32]]] = []
 
         records: List[TransactionRecord] = await self.wallet_state_manager.tx_store.get_not_sent()
 
         for record in records:
             if record.spend_bundle is None:
                 continue
-            msg = Message(
-                "send_transaction",
+            msg = make_msg(
+                ProtocolMessageTypes.send_transaction,
                 wallet_protocol.SendTransaction(record.spend_bundle),
             )
-            messages.append(msg)
+            already_sent = set()
+            for peer, status, _ in record.sent_to:
+                already_sent.add(hexstr_to_bytes(peer))
+            messages.append((msg, already_sent))
 
         return messages
 
@@ -294,8 +313,10 @@ class WalletNode:
     async def on_connect(self, peer: WSChiaConnection):
         if self.wallet_state_manager is None or self.backup_initialized is False:
             return
-        messages = await self._messages_to_resend()
-        for msg in messages:
+        messages_peer_ids = await self._messages_to_resend()
+        for msg, peer_ids in messages_peer_ids:
+            if peer.peer_node_id in peer_ids:
+                continue
             await peer.send_message(msg)
 
     async def _periodically_check_full_node(self):
@@ -335,7 +356,7 @@ class WalletNode:
         header_block_records: List[HeaderBlockRecord] = []
         async with self.wallet_state_manager.blockchain.lock:
             for block in header_blocks:
-                if block.is_block:
+                if block.is_transaction_block:
                     # Find additions and removals
                     (additions, removals,) = await self.wallet_state_manager.get_filter_additions_removals(
                         block, block.transactions_filter, None
@@ -361,14 +382,16 @@ class WalletNode:
                 ) = await self.wallet_state_manager.blockchain.receive_block(hbr)
                 if result == ReceiveBlockResult.NEW_PEAK:
                     if not self.wallet_state_manager.sync_mode:
-                        self.wallet_state_manager.blockchain.clean_sub_block_records()
+                        self.wallet_state_manager.blockchain.clean_block_records()
                     self.wallet_state_manager.state_changed("new_block")
                 elif result == ReceiveBlockResult.INVALID_BLOCK:
-                    self.log.info(f"Invalid block from peer: {peer.get_peer_info()}")
+                    self.log.info(f"Invalid block from peer: {peer.get_peer_info()} {error}")
                     await peer.close()
                     return
+                else:
+                    self.log.debug(f"Result: {result}")
 
-    async def new_peak(self, peak: wallet_protocol.NewPeak, peer: WSChiaConnection):
+    async def new_peak_wallet(self, peak: wallet_protocol.NewPeakWallet, peer: WSChiaConnection):
         if self.wallet_state_manager is None:
             return
 
@@ -378,32 +401,28 @@ class WalletNode:
         if self.new_peak_lock is None:
             self.new_peak_lock = asyncio.Lock()
         async with self.new_peak_lock:
-            request = wallet_protocol.RequestSubBlockHeader(peak.sub_block_height)
-            response: Optional[RespondSubBlockHeader] = await peer.request_sub_block_header(request)
+            request = wallet_protocol.RequestBlockHeader(peak.height)
+            response: Optional[RespondBlockHeader] = await peer.request_block_header(request)
 
-            if response is None or not isinstance(response, RespondSubBlockHeader) or response.header_block is None:
+            if response is None or not isinstance(response, RespondBlockHeader) or response.header_block is None:
                 return
 
             header_block = response.header_block
 
-            if (curr_peak is None and header_block.sub_block_height < self.constants.WEIGHT_PROOF_RECENT_BLOCKS) or (
+            if (curr_peak is None and header_block.height < self.constants.WEIGHT_PROOF_RECENT_BLOCKS) or (
                 curr_peak is not None
-                and curr_peak.sub_block_height
-                > header_block.sub_block_height - self.constants.WEIGHT_PROOF_RECENT_BLOCKS
+                and curr_peak.height > header_block.height - self.constants.WEIGHT_PROOF_RECENT_BLOCKS
             ):
                 top = header_block
                 blocks = [top]
                 # Fetch blocks backwards until we hit the one that we have,
                 # then complete them with additions / removals going forward
-                while (
-                    not self.wallet_state_manager.blockchain.contains_sub_block(top.prev_header_hash)
-                    and top.sub_block_height > 0
-                ):
-                    request_prev = wallet_protocol.RequestSubBlockHeader(top.sub_block_height - 1)
-                    response_prev: Optional[RespondSubBlockHeader] = await peer.request_sub_block_header(request_prev)
+                while not self.wallet_state_manager.blockchain.contains_block(top.prev_header_hash) and top.height > 0:
+                    request_prev = wallet_protocol.RequestBlockHeader(top.height - 1)
+                    response_prev: Optional[RespondBlockHeader] = await peer.request_block_header(request_prev)
                     if response_prev is None:
                         return
-                    if not isinstance(response_prev, RespondSubBlockHeader):
+                    if not isinstance(response_prev, RespondBlockHeader):
                         return
                     prev_head = response_prev.header_block
                     blocks.append(prev_head)
@@ -415,7 +434,7 @@ class WalletNode:
                 # Sync if PoW validates
                 if self.wallet_state_manager.sync_mode:
                     return
-                weight_request = RequestProofOfWeight(header_block.sub_block_height, header_block.header_hash)
+                weight_request = RequestProofOfWeight(header_block.height, header_block.header_hash)
                 weight_proof_response: RespondProofOfWeight = await peer.request_proof_of_weight(weight_request)
                 if weight_proof_response is None:
                     return
@@ -428,7 +447,7 @@ class WalletNode:
                         f"invalid weight proof, num of epochs {len(weight_proof.sub_epochs)}"
                         f" recent blocks num ,{len(weight_proof.recent_chain_data)}"
                     )
-                    self.log.error(f"{weight_proof}")
+                    self.log.debug(f"{weight_proof}")
                     return None
                 self.log.info(f"Validated, fork point is {fork_point}")
                 self.wallet_state_manager.sync_store.add_potential_fork_point(
@@ -442,7 +461,7 @@ class WalletNode:
         self.sync_event.set()
 
     async def check_new_peak(self):
-        current_peak: Optional[SubBlockRecord] = self.wallet_state_manager.blockchain.get_peak()
+        current_peak: Optional[BlockRecord] = self.wallet_state_manager.blockchain.get_peak()
         if current_peak is None:
             return
         potential_peaks: List[
@@ -485,7 +504,7 @@ class WalletNode:
             return
 
         highest_weight: uint128 = uint128(0)
-        peak_sub_height: uint32 = uint32(0)
+        peak_height: uint32 = uint32(0)
         peak: Optional[HeaderBlock] = None
         potential_peaks: List[
             Tuple[bytes32, HeaderBlock]
@@ -496,10 +515,10 @@ class WalletNode:
         for header_hash, potential_peak_block in potential_peaks:
             if potential_peak_block.weight > highest_weight:
                 highest_weight = potential_peak_block.weight
-                peak_sub_height = potential_peak_block.sub_block_height
+                peak_height = potential_peak_block.height
                 peak = potential_peak_block
 
-        if peak_sub_height is None or peak_sub_height == 0:
+        if peak_height is None or peak_height == 0:
             return
 
         if self.wallet_state_manager.peak is not None and highest_weight <= self.wallet_state_manager.peak.weight:
@@ -518,9 +537,9 @@ class WalletNode:
             await self.wallet_state_manager.blockchain.warmup(fork_height)
             batch_size = self.constants.MAX_BLOCK_COUNT_PER_REQUESTS
             advanced_peak = False
-            for i in range(max(0, fork_height - 1), peak_sub_height, batch_size):
+            for i in range(max(0, fork_height - 1), peak_height, batch_size):
                 start_height = i
-                end_height = min(peak_sub_height, start_height + batch_size)
+                end_height = min(peak_height, start_height + batch_size)
                 peers: List[WSChiaConnection] = self.server.get_full_node_connections()
                 added = False
                 for peer in peers:
@@ -539,18 +558,18 @@ class WalletNode:
 
                 peak = self.wallet_state_manager.blockchain.get_peak()
                 assert peak is not None
-                self.wallet_state_manager.blockchain.clean_sub_block_record(
+                self.wallet_state_manager.blockchain.clean_block_record(
                     min(
-                        end_height - self.constants.SUB_BLOCKS_CACHE_SIZE,
-                        peak.sub_block_height - self.constants.SUB_BLOCKS_CACHE_SIZE,
+                        end_height - self.constants.BLOCKS_CACHE_SIZE,
+                        peak.height - self.constants.BLOCKS_CACHE_SIZE,
                     )
                 )
 
     async def fetch_blocks_and_validate(
         self,
         peer: WSChiaConnection,
-        sub_height_start: uint32,
-        sub_height_end: uint32,
+        height_start: uint32,
+        height_end: uint32,
         fork_point_with_peak: uint32,
     ) -> Tuple[bool, bool]:
         """
@@ -560,8 +579,8 @@ class WalletNode:
         if self.wallet_state_manager is None:
             return False, False
 
-        self.log.info(f"Requesting sub blocks {sub_height_start}-{sub_height_end}")
-        request = RequestHeaderBlocks(uint32(sub_height_start), uint32(sub_height_end))
+        self.log.info(f"Requesting blocks {height_start}-{height_end}")
+        request = RequestHeaderBlocks(uint32(height_start), uint32(height_end))
         res: Optional[RespondHeaderBlocks] = await peer.request_header_blocks(request)
         if res is None or not isinstance(res, RespondHeaderBlocks):
             raise ValueError("Peer returned no response")
@@ -591,7 +610,7 @@ class WalletNode:
                 raise ValidationError(Err(pre_validation_results[i].error))
 
             fork_point_with_old_peak = None if advanced_peak else fork_point_with_peak
-            if header_block.is_block:
+            if header_block.is_transaction_block:
                 # Find additions and removals
                 (additions, removals,) = await self.wallet_state_manager.get_filter_additions_removals(
                     header_block, header_block.transactions_filter, fork_point_with_old_peak
@@ -621,7 +640,7 @@ class WalletNode:
                     header_block_record, pre_validation_results[i], trusted, fork_point_with_old_peak
                 )
             self.log.debug(
-                f"Time taken to validate {header_block.sub_block_height} with fork "
+                f"Time taken to validate {header_block.height} with fork "
                 f"{fork_point_with_old_peak}: {time.time() - start_t}"
             )
             if result == ReceiveBlockResult.NEW_PEAK:
@@ -739,7 +758,7 @@ class WalletNode:
 
     async def get_additions(self, peer: WSChiaConnection, block_i, additions) -> Optional[List[Coin]]:
         if len(additions) > 0:
-            additions_request = RequestAdditions(block_i.sub_block_height, block_i.header_hash, additions)
+            additions_request = RequestAdditions(block_i.height, block_i.header_hash, additions)
             additions_res: Optional[Union[RespondAdditions, RejectAdditionsRequest]] = await peer.request_additions(
                 additions_request
             )
@@ -750,7 +769,7 @@ class WalletNode:
                 validated = self.validate_additions(
                     additions_res.coins,
                     additions_res.proofs,
-                    block_i.foliage_block.additions_root,
+                    block_i.foliage_transaction_block.additions_root,
                 )
                 if not validated:
                     await peer.close()
@@ -787,11 +806,9 @@ class WalletNode:
 
         if len(removals) > 0 or request_all_removals:
             if request_all_removals:
-                removals_request = wallet_protocol.RequestRemovals(block_i.sub_block_height, block_i.header_hash, None)
+                removals_request = wallet_protocol.RequestRemovals(block_i.height, block_i.header_hash, None)
             else:
-                removals_request = wallet_protocol.RequestRemovals(
-                    block_i.sub_block_height, block_i.header_hash, removals
-                )
+                removals_request = wallet_protocol.RequestRemovals(block_i.height, block_i.header_hash, removals)
             removals_res: Optional[Union[RespondRemovals, RejectRemovalsRequest]] = await peer.request_removals(
                 removals_request
             )
@@ -801,7 +818,7 @@ class WalletNode:
                 validated = self.validate_removals(
                     removals_res.coins,
                     removals_res.proofs,
-                    block_i.foliage_block.removals_root,
+                    block_i.foliage_transaction_block.removals_root,
                 )
                 if validated is False:
                     await peer.close()

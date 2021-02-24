@@ -1,7 +1,7 @@
 from typing import Dict, Optional, List, Tuple
 from src.types.full_block import FullBlock
-from src.consensus.sub_block_record import SubBlockRecord
-from src.types.sized_bytes import bytes32
+from src.consensus.block_record import BlockRecord
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.types.unfinished_header_block import UnfinishedHeaderBlock
 from src.util.ints import uint32, uint64
 from src.types.coin_record import CoinRecord
@@ -20,36 +20,34 @@ class FullNodeRpcClient(RpcClient):
     async def get_blockchain_state(self) -> Dict:
         response = await self.fetch("get_blockchain_state", {})
         if response["blockchain_state"]["peak"] is not None:
-            response["blockchain_state"]["peak"] = FullBlock.from_json_dict(response["blockchain_state"]["peak"])
+            response["blockchain_state"]["peak"] = BlockRecord.from_json_dict(response["blockchain_state"]["peak"])
         return response["blockchain_state"]
 
-    async def get_sub_block(self, header_hash) -> Optional[FullBlock]:
+    async def get_block(self, header_hash) -> Optional[FullBlock]:
         try:
-            response = await self.fetch("get_sub_block", {"header_hash": header_hash.hex()})
+            response = await self.fetch("get_block", {"header_hash": header_hash.hex()})
         except Exception:
             return None
-        return FullBlock.from_json_dict(response["sub_block"])
+        return FullBlock.from_json_dict(response["block"])
 
-    async def get_sub_block_record_by_sub_height(self, sub_height) -> Optional[SubBlockRecord]:
+    async def get_block_record_by_height(self, height) -> Optional[BlockRecord]:
         try:
-            response = await self.fetch("get_sub_block_record_by_sub_height", {"sub_height": sub_height})
+            response = await self.fetch("get_block_record_by_height", {"height": height})
         except Exception:
             return None
-        return SubBlockRecord.from_json_dict(response["sub_block_record"])
+        return BlockRecord.from_json_dict(response["block_record"])
 
-    async def get_sub_block_record(self, header_hash) -> Optional[SubBlockRecord]:
+    async def get_block_record(self, header_hash) -> Optional[BlockRecord]:
         try:
-            response = await self.fetch("get_sub_block_record", {"header_hash": header_hash.hex()})
-            if response["sub_block_record"] is None:
+            response = await self.fetch("get_block_record", {"header_hash": header_hash.hex()})
+            if response["block_record"] is None:
                 return None
         except Exception:
             return None
-        json_res = response["sub_block_record"]
-        del json_res["reward_claims_incorporated"]
-        return SubBlockRecord.from_json_dict(json_res)
+        return BlockRecord.from_json_dict(response["block_record"])
 
-    async def get_unfinished_sub_block_headers(self) -> List[UnfinishedHeaderBlock]:
-        response = await self.fetch("get_unfinished_sub_block_headers", {})
+    async def get_unfinished_block_headers(self) -> List[UnfinishedHeaderBlock]:
+        response = await self.fetch("get_unfinished_block_headers", {})
         return [UnfinishedHeaderBlock.from_json_dict(r) for r in response["headers"]]
 
     async def get_all_block(self, start: uint32, end: uint32) -> List[FullBlock]:
@@ -90,12 +88,12 @@ class FullNodeRpcClient(RpcClient):
             additions.append(CoinRecord.from_json_dict(coin_record))
         return additions, removals
 
-    async def get_sub_block_records(self, start: int, end: int) -> List:
+    async def get_block_records(self, start: int, end: int) -> List:
         try:
-            response = await self.fetch("get_sub_block_records", {"start": start, "end": end})
-            if response["sub_block_records"] is None:
+            response = await self.fetch("get_block_records", {"start": start, "end": end})
+            if response["block_records"] is None:
                 return []
         except Exception:
             return []
-        # TODO: return sub block records
-        return response["sub_block_records"]
+        # TODO: return block records
+        return response["block_records"]

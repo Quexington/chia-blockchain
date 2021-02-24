@@ -46,6 +46,7 @@ class Harvester:
         self.farmer_public_keys = []
         self.pool_public_keys = []
         self.match_str = None
+        self.show_memo: bool = False
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=config["num_threads"])
         self.state_changed_callback = None
         self.server = None
@@ -86,6 +87,7 @@ class Harvester:
                     "size": prover.get_size(),
                     "plot-seed": prover.get_id(),
                     "pool_public_key": plot_info.pool_public_key,
+                    "pool_contract_puzzle_hash": plot_info.pool_contract_puzzle_hash,
                     "farmer_public_key": plot_info.farmer_public_key,
                     "plot_public_key": plot_info.plot_public_key,
                     "local_sk": plot_info.local_sk,
@@ -112,6 +114,7 @@ class Harvester:
                     self.farmer_public_keys,
                     self.pool_public_keys,
                     self.match_str,
+                    self.show_memo,
                     self.root_path,
                 )
         if changed:

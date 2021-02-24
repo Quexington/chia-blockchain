@@ -1,11 +1,9 @@
 import asyncio
-import dataclasses
 import time
 from pathlib import Path
 from typing import Callable, List, Tuple
 
 from blspy import AugSchemeMPL, G2Element
-from chiapos import DiskProver
 
 from src.consensus.pot_iterations import (
     calculate_sp_interval_iters,
@@ -15,10 +13,11 @@ from src.harvester.harvester import Harvester
 from src.plotting.plot_tools import PlotInfo
 from src.protocols import harvester_protocol
 from src.protocols.farmer_protocol import FarmingInfo
-from src.server.outbound_message import Message
+from src.protocols.protocol_message_types import ProtocolMessageTypes
+from src.server.outbound_message import make_msg
 from src.server.ws_connection import WSChiaConnection
-from src.types.proof_of_space import ProofOfSpace
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.proof_of_space import ProofOfSpace
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.api_decorators import api_request, peer_required
 from src.util.ints import uint8, uint64, uint32
 
@@ -52,7 +51,9 @@ class HarvesterAPI:
 
     @peer_required
     @api_request
-    async def new_signage_point(self, new_challenge: harvester_protocol.NewSignagePoint, peer: WSChiaConnection):
+    async def new_signage_point_harvester(
+        self, new_challenge: harvester_protocol.NewSignagePointHarvester, peer: WSChiaConnection
+    ):
         """
         The harvester receives a new signage point from the farmer, this happens at the start of each slot.
         The harvester does a few things:
@@ -91,21 +92,15 @@ class HarvesterAPI:
                 try:
                     quality_strings = plot_info.prover.get_qualities_for_challenge(sp_challenge_hash)
                 except Exception as e:
-                    self.harvester.log.error(f"Error using prover object. Reinitializing prover object. {e}")
-                    try:
-                        self.harvester.provers[filename] = dataclasses.replace(
-                            plot_info, prover=DiskProver(str(filename))
-                        )
-                        quality_strings = plot_info.prover.get_qualities_for_challenge(sp_challenge_hash)
-                    except Exception as e:
-                        self.harvester.log.error(f"Error reinitializing plot {filename}. {e}")
-                        return []
+                    self.harvester.log.error(f"Error using prover object {e}")
+                    return []
 
                 responses: List[Tuple[bytes32, ProofOfSpace]] = []
                 if quality_strings is not None:
                     # Found proofs of space (on average 1 is expected per plot)
                     for index, quality_str in enumerate(quality_strings):
                         required_iters: uint64 = calculate_iterations_quality(
+                            self.harvester.constants.DIFFICULTY_CONSTANT_FACTOR,
                             quality_str,
                             plot_info.prover.get_size(),
                             new_challenge.difficulty,
@@ -132,7 +127,7 @@ class HarvesterAPI:
                                     ProofOfSpace(
                                         sp_challenge_hash,
                                         plot_info.pool_public_key,
-                                        None,
+                                        plot_info.pool_contract_puzzle_hash,
                                         plot_public_key,
                                         uint8(plot_info.prover.get_size()),
                                         proof_xs,
@@ -186,7 +181,7 @@ class HarvesterAPI:
         for sublist_awaitable in asyncio.as_completed(awaitables):
             for response in await sublist_awaitable:
                 total_proofs_found += 1
-                msg = Message("new_proof_of_space", response)
+                msg = make_msg(ProtocolMessageTypes.new_proof_of_space, response)
                 await peer.send_message(msg)
 
         now = uint64(int(time.time()))
@@ -198,7 +193,7 @@ class HarvesterAPI:
             uint32(total_proofs_found),
             uint32(total),
         )
-        pass_msg = Message("farming_info", farming_info)
+        pass_msg = make_msg(ProtocolMessageTypes.farming_info, farming_info)
         await peer.send_message(pass_msg)
         self.harvester.log.info(
             f"{len(awaitables)} plots were eligible for farming {new_challenge.challenge_hash.hex()[:10]}..."
@@ -239,5 +234,4 @@ class HarvesterAPI:
             message_signatures,
         )
 
-        msg = Message("respond_signatures", response)
-        return msg
+        return make_msg(ProtocolMessageTypes.respond_signatures, response)

@@ -7,19 +7,21 @@ from secrets import token_bytes
 from typing import Dict, Optional, List, Any, Set
 from blspy import G2Element, AugSchemeMPL
 
+from src.consensus.cost_calculator import calculate_cost_of_program, CostResult
+from src.full_node.bundle_tools import best_solution_program
 from src.protocols.wallet_protocol import PuzzleSolutionResponse
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.coin_solution import CoinSolution
-from src.types.program import Program
+from src.types.blockchain_format.program import Program
 from src.types.spend_bundle import SpendBundle
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.byte_types import hexstr_to_bytes
 from src.util.condition_tools import (
     conditions_dict_for_solution,
     pkm_pairs_for_conditions_dict,
 )
 from src.util.json_util import dict_to_json_str
-from src.util.ints import uint8, uint64, uint32
+from src.util.ints import uint8, uint64, uint32, uint128
 from src.wallet.block_record import HeaderBlockRecord
 from src.wallet.cc_wallet.cc_info import CCInfo
 from src.wallet.puzzles.p2_delegated_puzzle_or_hidden_puzzle import (
@@ -59,6 +61,7 @@ class CCWallet:
     standard_wallet: Wallet
     base_puzzle_program: Optional[bytes]
     base_inner_puzzle_hash: Optional[bytes32]
+    cost_of_single_tx: Optional[int]
 
     @staticmethod
     async def create_new_cc(
@@ -67,6 +70,7 @@ class CCWallet:
         amount: uint64,
     ):
         self = CCWallet()
+        self.cost_of_single_tx = None
         self.base_puzzle_program = None
         self.base_inner_puzzle_hash = None
         self.standard_wallet = wallet
@@ -107,7 +111,6 @@ class CCWallet:
             raise ValueError("Internal Error, unable to generate new coloured coin")
 
         regular_record = TransactionRecord(
-            confirmed_at_sub_height=uint32(0),
             confirmed_at_height=uint32(0),
             created_at_time=uint64(int(time.time())),
             to_puzzle_hash=cc_coin.puzzle_hash,
@@ -125,7 +128,6 @@ class CCWallet:
             name=token_bytes(),
         )
         cc_record = TransactionRecord(
-            confirmed_at_sub_height=uint32(0),
             confirmed_at_height=uint32(0),
             created_at_time=uint64(int(time.time())),
             to_puzzle_hash=cc_coin.puzzle_hash,
@@ -152,8 +154,8 @@ class CCWallet:
         wallet: Wallet,
         genesis_checker_hex: str,
     ) -> CCWallet:
-
         self = CCWallet()
+        self.cost_of_single_tx = None
         self.base_puzzle_program = None
         self.base_inner_puzzle_hash = None
         self.standard_wallet = wallet
@@ -210,7 +212,7 @@ class CCWallet:
         self.log.info(f"Confirmed balance for cc wallet {self.id()} is {amount}")
         return uint64(amount)
 
-    async def get_unconfirmed_balance(self, unspent_records=None) -> uint64:
+    async def get_unconfirmed_balance(self, unspent_records=None) -> uint128:
         confirmed = await self.get_confirmed_balance(unspent_records)
         unconfirmed_tx: List[TransactionRecord] = await self.wallet_state_manager.tx_store.get_unconfirmed_for_wallet(
             self.id()
@@ -227,7 +229,41 @@ class CCWallet:
         result = confirmed - removal_amount + addition_amount
 
         self.log.info(f"Unconfirmed balance for cc wallet {self.id()} is {result}")
-        return uint64(result)
+        return uint128(result)
+
+    async def get_max_send_amount(self, records=None):
+        spendable: List[WalletCoinRecord] = list(
+            await self.wallet_state_manager.get_spendable_coins_for_wallet(self.id(), records)
+        )
+        if len(spendable) == 0:
+            return 0
+        spendable.sort(reverse=True, key=lambda record: record.coin.amount)
+        if self.cost_of_single_tx is None:
+            coin = spendable[0].coin
+            tx = await self.generate_signed_transaction(
+                [coin.amount], [coin.puzzle_hash], coins={coin}, ignore_max_send_amount=True
+            )
+            program = best_solution_program(tx.spend_bundle)
+            # npc contains names of the coins removed, puzzle_hashes and their spend conditions
+            cost_result: CostResult = calculate_cost_of_program(
+                program, self.wallet_state_manager.constants.CLVM_COST_RATIO_CONSTANT, True
+            )
+            self.cost_of_single_tx = cost_result.cost
+            self.log.info(f"Cost of a single tx for standard wallet: {self.cost_of_single_tx}")
+
+        max_cost = self.wallet_state_manager.constants.MAX_BLOCK_COST_CLVM / 2  # avoid full block TXs
+        current_cost = 0
+        total_amount = 0
+        total_coin_count = 0
+
+        for record in spendable:
+            current_cost += self.cost_of_single_tx
+            total_amount += record.coin.amount
+            total_coin_count += 1
+            if current_cost + self.cost_of_single_tx > max_cost:
+                break
+
+        return total_amount
 
     async def get_name(self):
         return self.wallet_info.name
@@ -241,7 +277,7 @@ class CCWallet:
         assert self.cc_info.my_genesis_checker is not None
         return bytes(self.cc_info.my_genesis_checker).hex()
 
-    async def coin_added(self, coin: Coin, height: int, header_hash: bytes32, removals: List[Coin], sub_height: uint32):
+    async def coin_added(self, coin: Coin, header_hash: bytes32, removals: List[Coin], height: uint32):
         """ Notification from wallet state manager that wallet has been received. """
         self.log.info(f"CC wallet has been notified that {coin} was added")
 
@@ -261,7 +297,7 @@ class CCWallet:
                 "data": {
                     "action_data": {
                         "api_name": "request_puzzle_solution",
-                        "sub_height": sub_height,
+                        "height": height,
                         "coin_name": coin.parent_coin_info,
                         "received_coin": coin.name(),
                     }
@@ -272,7 +308,7 @@ class CCWallet:
             await self.wallet_state_manager.create_action(
                 name="request_puzzle_solution",
                 wallet_id=self.id(),
-                type=self.type(),
+                wallet_type=self.type(),
                 callback="puzzle_solution_received",
                 done=False,
                 data=data_str,
@@ -280,10 +316,10 @@ class CCWallet:
 
     async def puzzle_solution_received(self, response: PuzzleSolutionResponse, action_id: int):
         coin_name = response.coin_name
-        sub_height = response.sub_height
+        height = response.height
         puzzle: Program = response.puzzle
         r = uncurry_cc(puzzle)
-        header_hash = self.wallet_state_manager.blockchain.sub_block_record(sub_height)
+        header_hash = self.wallet_state_manager.blockchain.height_to_hash(height)
         block: Optional[
             HeaderBlockRecord
         ] = await self.wallet_state_manager.blockchain.block_store.get_header_block_record(header_hash)
@@ -365,7 +401,6 @@ class CCWallet:
 
         if send:
             regular_record = TransactionRecord(
-                confirmed_at_sub_height=uint32(0),
                 confirmed_at_height=uint32(0),
                 created_at_time=uint64(int(time.time())),
                 to_puzzle_hash=cc_puzzle_hash,
@@ -383,7 +418,6 @@ class CCWallet:
                 name=token_bytes(),
             )
             cc_record = TransactionRecord(
-                confirmed_at_sub_height=uint32(0),
                 confirmed_at_height=uint32(0),
                 created_at_time=uint64(int(time.time())),
                 to_puzzle_hash=cc_puzzle_hash,
@@ -405,8 +439,8 @@ class CCWallet:
 
         return full_spend
 
-    async def get_spendable_balance(self) -> uint64:
-        coins = await self.get_cc_spendable_coins()
+    async def get_spendable_balance(self, records=None) -> uint64:
+        coins = await self.get_cc_spendable_coins(records)
         amount = 0
         for record in coins:
             amount += record.coin.amount
@@ -436,10 +470,12 @@ class CCWallet:
 
         return uint64(addition_amount)
 
-    async def get_cc_spendable_coins(self) -> List[WalletCoinRecord]:
+    async def get_cc_spendable_coins(self, records=None) -> List[WalletCoinRecord]:
         result: List[WalletCoinRecord] = []
 
-        record_list: Set[WalletCoinRecord] = await self.wallet_state_manager.get_spendable_coins_for_wallet(self.id())
+        record_list: Set[WalletCoinRecord] = await self.wallet_state_manager.get_spendable_coins_for_wallet(
+            self.id(), records
+        )
 
         for record in record_list:
             lineage = await self.get_lineage_proof_for_coin(record.coin)
@@ -465,7 +501,7 @@ class CCWallet:
             used_coins: Set = set()
 
             # Use older coins first
-            spendable.sort(key=lambda r: r.confirmed_block_sub_height)
+            spendable.sort(key=lambda r: r.confirmed_block_height)
 
             # Try to use coins from the store, if there isn't enough of "unused"
             # coins use change coins that are not confirmed yet
@@ -525,19 +561,24 @@ class CCWallet:
         fee: uint64 = uint64(0),
         origin_id: bytes32 = None,
         coins: Set[Coin] = None,
+        ignore_max_send_amount: bool = False,
     ) -> TransactionRecord:
-        sigs: List[G2Element] = []
-
         # Get coins and calculate amount of change required
         outgoing_amount = uint64(sum(amounts))
+        total_outgoing = outgoing_amount + fee
+
+        if not ignore_max_send_amount:
+            max_send = await self.get_max_send_amount()
+            if total_outgoing > max_send:
+                raise ValueError(f"Can't send more than {max_send} in a single transaction")
 
         if coins is None:
-            selected_coins: Set[Coin] = await self.select_coins(uint64(outgoing_amount + fee))
+            selected_coins: Set[Coin] = await self.select_coins(uint64(total_outgoing))
         else:
             selected_coins = coins
 
         total_amount = sum([x.amount for x in selected_coins])
-        change = total_amount - outgoing_amount - fee
+        change = total_amount - total_outgoing
         primaries = []
         for amount, puzzle_hash in zip(amounts, puzzle_hashes):
             primaries.append({"puzzlehash": puzzle_hash, "amount": amount})
@@ -546,31 +587,34 @@ class CCWallet:
             changepuzzlehash = await self.get_new_inner_hash()
             primaries.append({"puzzlehash": changepuzzlehash, "amount": change})
 
-        if fee > 0:
-            innersol = self.standard_wallet.make_solution(primaries=primaries, fee=fee)
-        else:
-            innersol = self.standard_wallet.make_solution(primaries=primaries)
-
-        coin = selected_coins.pop()
+        coin = list(selected_coins)[0]
         inner_puzzle = await self.inner_puzzle_for_cc_puzhash(coin.puzzle_hash)
 
         if self.cc_info.my_genesis_checker is None:
             raise ValueError("My genesis checker is None")
 
         genesis_id = genesis_coin_id_for_genesis_coin_checker(self.cc_info.my_genesis_checker)
-        innersol_list = [innersol]
 
-        sigs = sigs + await self.get_sigs(inner_puzzle, innersol, coin.name())
-        lineage_proof = await self.get_lineage_proof_for_coin(coin)
-        assert lineage_proof is not None
-        spendable_cc_list = [SpendableCC(coin, genesis_id, inner_puzzle, lineage_proof)]
-        assert self.cc_info.my_genesis_checker is not None
-
+        spendable_cc_list = []
+        innersol_list = []
+        sigs: List[G2Element] = []
+        first = True
         for coin in selected_coins:
             coin_inner_puzzle = await self.inner_puzzle_for_cc_puzhash(coin.puzzle_hash)
-            innersol = self.standard_wallet.make_solution()
+            if first:
+                first = False
+                if fee > 0:
+                    innersol = self.standard_wallet.make_solution(primaries=primaries, fee=fee)
+                else:
+                    innersol = self.standard_wallet.make_solution(primaries=primaries)
+            else:
+                innersol = self.standard_wallet.make_solution()
             innersol_list.append(innersol)
+            lineage_proof = await self.get_lineage_proof_for_coin(coin)
+            assert lineage_proof is not None
+            spendable_cc_list.append(SpendableCC(coin, genesis_id, inner_puzzle, lineage_proof))
             sigs = sigs + await self.get_sigs(coin_inner_puzzle, innersol, coin.name())
+
         spend_bundle = spend_bundle_for_spendable_ccs(
             CC_MOD,
             self.cc_info.my_genesis_checker,
@@ -580,7 +624,6 @@ class CCWallet:
         )
         # TODO add support for array in stored records
         return TransactionRecord(
-            confirmed_at_sub_height=uint32(0),
             confirmed_at_height=uint32(0),
             created_at_time=uint64(int(time.time())),
             to_puzzle_hash=puzzle_hashes[0],

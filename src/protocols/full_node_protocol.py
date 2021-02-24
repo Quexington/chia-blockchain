@@ -3,128 +3,128 @@ from typing import List, Optional
 
 from src.types.end_of_slot_bundle import EndOfSubSlotBundle
 from src.types.full_block import FullBlock
-from src.types.slots import SubSlotProofs
+from src.types.blockchain_format.slots import SubSlotProofs
 from src.types.spend_bundle import SpendBundle
 from src.types.unfinished_block import UnfinishedBlock
-from src.types.sized_bytes import bytes32
-from src.types.vdf import VDFInfo, VDFProof
+from src.types.blockchain_format.sized_bytes import bytes32
+from src.types.blockchain_format.vdf import VDFInfo, VDFProof
 from src.types.weight_proof import WeightProof
-from src.util.cbor_message import cbor_message
 from src.util.ints import uint8, uint32, uint64, uint128
 from src.types.peer_info import TimestampedPeerInfo
+from src.util.streamable import Streamable, streamable
 
 """
 Protocol between full nodes.
+Note: When changing this file, also change protocol_message_types.py, and the protocol version in shared_protocol.py
 """
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewPeak:
+@streamable
+class NewPeak(Streamable):
     header_hash: bytes32
-    sub_block_height: uint32
+    height: uint32
     weight: uint128
     fork_point_with_previous_peak: uint32
     unfinished_reward_block_hash: bytes32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewTransaction:
+@streamable
+class NewTransaction(Streamable):
     transaction_id: bytes32
     cost: uint64
     fees: uint64
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestTransaction:
+@streamable
+class RequestTransaction(Streamable):
     transaction_id: bytes32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondTransaction:
+@streamable
+class RespondTransaction(Streamable):
     transaction: SpendBundle
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestProofOfWeight:
+@streamable
+class RequestProofOfWeight(Streamable):
     total_number_of_blocks: uint32
     tip: bytes32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondProofOfWeight:
+@streamable
+class RespondProofOfWeight(Streamable):
     wp: WeightProof
     tip: bytes32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestSubBlock:
-    sub_height: uint32
+@streamable
+class RequestBlock(Streamable):
+    height: uint32
     include_transaction_block: bool
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RejectSubBlock:
-    sub_height: uint32
+@streamable
+class RejectBlock(Streamable):
+    height: uint32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestSubBlocks:
-    start_sub_height: uint32
-    end_sub_height: uint32
+class RequestBlocks(Streamable):
+    start_height: uint32
+    end_height: uint32
     include_transaction_block: bool
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondSubBlocks:
-    start_sub_height: uint32
-    end_sub_height: uint32
-    sub_blocks: List[FullBlock]
+@streamable
+class RespondBlocks(Streamable):
+    start_height: uint32
+    end_height: uint32
+    blocks: List[FullBlock]
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RejectSubBlocks:
-    start_sub_height: uint32
-    end_sub_height: uint32
+@streamable
+class RejectBlocks(Streamable):
+    start_height: uint32
+    end_height: uint32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondSubBlock:
-    sub_block: FullBlock
+@streamable
+class RespondBlock(Streamable):
+    block: FullBlock
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewUnfinishedSubBlock:
+@streamable
+class NewUnfinishedBlock(Streamable):
     unfinished_reward_hash: bytes32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestUnfinishedSubBlock:
+@streamable
+class RequestUnfinishedBlock(Streamable):
     unfinished_reward_hash: bytes32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondUnfinishedSubBlock:
-    unfinished_sub_block: UnfinishedBlock
+@streamable
+class RespondUnfinishedBlock(Streamable):
+    unfinished_block: UnfinishedBlock
 
 
 @dataclass(frozen=True)
-@cbor_message
-class NewSignagePointOrEndOfSubSlot:
+@streamable
+class NewSignagePointOrEndOfSubSlot(Streamable):
     prev_challenge_hash: Optional[bytes32]
     challenge_hash: bytes32
     index_from_challenge: uint8
@@ -132,16 +132,16 @@ class NewSignagePointOrEndOfSubSlot:
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestSignagePointOrEndOfSubSlot:
+@streamable
+class RequestSignagePointOrEndOfSubSlot(Streamable):
     challenge_hash: bytes32
     index_from_challenge: uint8
     last_rc_infusion: bytes32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondSignagePoint:
+@streamable
+class RespondSignagePoint(Streamable):
     index_from_challenge: uint8
     challenge_chain_vdf: VDFInfo
     challenge_chain_proof: VDFProof
@@ -150,27 +150,27 @@ class RespondSignagePoint:
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondEndOfSubSlot:
+@streamable
+class RespondEndOfSubSlot(Streamable):
     end_of_slot_bundle: EndOfSubSlotBundle
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestMempoolTransactions:
+@streamable
+class RequestMempoolTransactions(Streamable):
     filter: bytes
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestCompactVDFs:
-    sub_height: uint32
+@streamable
+class RequestCompactVDFs(Streamable):
+    height: uint32
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondCompactVDFs:
-    sub_height: uint32
+@streamable
+class RespondCompactVDFs(Streamable):
+    height: uint32
     header_hash: bytes32
     end_of_slot_proofs: List[SubSlotProofs]  # List of challenge eos vdf and reward eos vdf
     cc_sp_proof: Optional[VDFProof]  # If not first sp
@@ -181,14 +181,14 @@ class RespondCompactVDFs:
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RequestPeers:
+@streamable
+class RequestPeers(Streamable):
     """
     Return full list of peers
     """
 
 
 @dataclass(frozen=True)
-@cbor_message
-class RespondPeers:
+@streamable
+class RespondPeers(Streamable):
     peer_list: List[TimestampedPeerInfo]

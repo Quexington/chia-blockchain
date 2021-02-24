@@ -6,14 +6,13 @@ from typing import Optional, List, Tuple, Any
 
 import json
 from blspy import PrivateKey, AugSchemeMPL, G1Element
-from clvm_tools import binutils
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.coin_solution import CoinSolution
-from src.types.program import Program
+from src.types.blockchain_format.program import Program
 from src.types.spend_bundle import SpendBundle
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.byte_types import hexstr_to_bytes
-from src.util.ints import uint8, uint64, uint32
+from src.util.ints import uint8, uint64, uint32, uint128
 from src.util.streamable import streamable, Streamable
 from src.wallet.rl_wallet.rl_wallet_puzzles import (
     rl_puzzle_for_pk,
@@ -304,7 +303,6 @@ class RLWallet:
         rl_coin = await self._get_rl_coin()
         puzzle_hash = rl_coin.puzzle_hash if rl_coin is not None else None
         tx_record = TransactionRecord(
-            confirmed_at_sub_height=uint32(0),
             confirmed_at_height=uint32(0),
             created_at_time=uint64(int(time.time())),
             to_puzzle_hash=puzzle_hash,
@@ -338,18 +336,19 @@ class RLWallet:
         available_amount = min(unlocked, total_amount)
         return uint64(available_amount)
 
-    async def get_confirmed_balance(self, unspent_records=None) -> uint64:
+    async def get_confirmed_balance(self, unspent_records=None) -> uint128:
         return await self.wallet_state_manager.get_confirmed_balance_for_wallet(self.id(), unspent_records)
 
-    async def get_unconfirmed_balance(self, unspent_records=None) -> uint64:
+    async def get_unconfirmed_balance(self, unspent_records=None) -> uint128:
         return await self.wallet_state_manager.get_unconfirmed_balance(self.id(), unspent_records)
 
-    async def get_frozen_amount(self) -> uint64:
-        return await self.wallet_state_manager.get_frozen_balance(self.id())
-
-    async def get_spendable_balance(self, unspent_records=None) -> uint64:
+    async def get_spendable_balance(self, unspent_records=None) -> uint128:
         spendable_am = await self.wallet_state_manager.get_confirmed_spendable_balance_for_wallet(self.id())
         return spendable_am
+
+    async def get_max_send_amount(self, records=None):
+        # Rate limited wallet is a singleton, max send is same as spendable
+        return await self.get_spendable_balance()
 
     async def get_pending_change_balance(self) -> uint64:
         unconfirmed_tx = await self.wallet_state_manager.tx_store.get_unconfirmed_for_wallet(self.id())
@@ -516,7 +515,6 @@ class RLWallet:
         spend_bundle = await self.rl_sign_transaction(transaction)
 
         return TransactionRecord(
-            confirmed_at_sub_height=uint32(0),
             confirmed_at_height=uint32(0),
             created_at_time=uint64(int(time.time())),
             to_puzzle_hash=to_puzzle_hash,
@@ -599,7 +597,6 @@ class RLWallet:
         spend_bundle = await self.clawback_rl_coin(to_puzzle_hash, fee)
 
         return TransactionRecord(
-            confirmed_at_sub_height=uint32(0),
             confirmed_at_height=uint32(0),
             created_at_time=uint64(int(time.time())),
             to_puzzle_hash=to_puzzle_hash,
@@ -666,18 +663,6 @@ class RLWallet:
         agg_spend = CoinSolution(consolidating_coin, Program.to([puzzle, solution]))
 
         list_of_coinsolutions.append(agg_spend)
-        # Spend lock
-        puzstring = f"(r (c (q 0x{consolidating_coin.name().hex()}) (q ())))"
-
-        puzzle = Program.to(binutils.assemble(puzstring))
-        solution = Program.to(binutils.assemble("()"))
-
-        ephemeral = CoinSolution(
-            Coin(self.rl_coin_record.coin.name(), puzzle.get_tree_hash(), uint64(0)),
-            Program.to([puzzle, solution]),
-        )
-        list_of_coinsolutions.append(ephemeral)
-
         aggsig = AugSchemeMPL.aggregate([signature])
 
         return SpendBundle(list_of_coinsolutions, aggsig)

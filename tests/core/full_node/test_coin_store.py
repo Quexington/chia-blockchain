@@ -1,15 +1,19 @@
 import asyncio
 from pathlib import Path
-from typing import Optional, List, Set
+from typing import Optional, List, Set, Tuple
 
 import aiosqlite
 import pytest
 
+from src.consensus.block_rewards import calculate_pool_reward, calculate_base_farmer_reward
 from src.consensus.blockchain import Blockchain, ReceiveBlockResult
+from src.consensus.coinbase import create_pool_coin, create_farmer_coin
 from src.full_node.coin_store import CoinStore
 from src.full_node.block_store import BlockStore
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.coin_record import CoinRecord
+from src.types.full_block import FullBlock
+from src.util.ints import uint64
 from tests.setup_nodes import test_constants, bt
 from src.util.wallet_tools import WalletTool
 
@@ -23,6 +27,25 @@ def event_loop():
 
 
 constants = test_constants
+
+
+def get_future_reward_coins(block: FullBlock) -> Tuple[Coin, Coin]:
+    pool_amount = calculate_pool_reward(block.height)
+    farmer_amount = calculate_base_farmer_reward(block.height)
+    if block.is_transaction_block():
+        assert block.transactions_info is not None
+        farmer_amount = uint64(farmer_amount + block.transactions_info.fees)
+    pool_coin: Coin = create_pool_coin(
+        block.height,
+        block.foliage.foliage_block_data.pool_target.puzzle_hash,
+        pool_amount,
+    )
+    farmer_coin: Coin = create_farmer_coin(
+        block.height,
+        block.foliage.foliage_block_data.farmer_reward_puzzle_hash,
+        farmer_amount,
+    )
+    return pool_coin, farmer_coin
 
 
 class TestCoinStore:
@@ -41,7 +64,7 @@ class TestCoinStore:
 
         coins_to_spend: List[Coin] = []
         for block in blocks:
-            if block.is_block():
+            if block.is_transaction_block():
                 for coin in block.get_included_reward_coins():
                     if coin.puzzle_hash == reward_ph:
                         coins_to_spend.append(coin)
@@ -65,13 +88,11 @@ class TestCoinStore:
         # Adding blocks to the coin store
         should_be_included_prev: Set[Coin] = set()
         should_be_included: Set[Coin] = set()
-        last_block_height = -1
         for block in blocks:
-            farmer_coin, pool_coin = block.get_future_reward_coins(last_block_height + 1)
+            farmer_coin, pool_coin = get_future_reward_coins(block)
             should_be_included.add(farmer_coin)
             should_be_included.add(pool_coin)
-            if block.is_block():
-                last_block_height = block.height
+            if block.is_transaction_block():
                 removals, additions = block.tx_removals_and_additions()
 
                 assert block.get_included_reward_coins() == should_be_included_prev
@@ -112,7 +133,7 @@ class TestCoinStore:
 
         # Save/get block
         for block in blocks:
-            if block.is_block():
+            if block.is_transaction_block():
                 await coin_store.new_block(block)
                 coins = block.get_included_reward_coins()
                 records = [await coin_store.get_coin_record(coin.name()) for coin in coins]
@@ -139,7 +160,7 @@ class TestCoinStore:
         coin_store = await CoinStore.create(connection)
 
         for block in blocks:
-            if block.is_block():
+            if block.is_transaction_block():
                 await coin_store.new_block(block)
                 coins = block.get_included_reward_coins()
                 records: List[Optional[CoinRecord]] = [await coin_store.get_coin_record(coin.name()) for coin in coins]
@@ -156,7 +177,7 @@ class TestCoinStore:
         await coin_store.rollback_to_block(reorg_index)
 
         for block in blocks:
-            if block.is_block():
+            if block.is_transaction_block():
                 coins = block.get_included_reward_coins()
                 records: List[Optional[CoinRecord]] = [await coin_store.get_coin_record(coin.name()) for coin in coins]
 
@@ -187,10 +208,10 @@ class TestCoinStore:
 
             for block in blocks:
                 await b.receive_block(block)
-            assert b.get_peak().sub_block_height == initial_block_count - 1
+            assert b.get_peak().height == initial_block_count - 1
 
             for c, block in enumerate(blocks):
-                if block.is_block():
+                if block.is_transaction_block():
                     coins = block.get_included_reward_coins()
                     records: List[Optional[CoinRecord]] = [
                         await coin_store.get_coin_record(coin.name()) for coin in coins
@@ -204,14 +225,14 @@ class TestCoinStore:
 
             for reorg_block in blocks_reorg_chain:
                 result, error_code, _ = await b.receive_block(reorg_block)
-                print(f"Height {reorg_block.sub_block_height} {initial_block_count - 10} result {result}")
-                if reorg_block.sub_block_height < initial_block_count - 10:
+                print(f"Height {reorg_block.height} {initial_block_count - 10} result {result}")
+                if reorg_block.height < initial_block_count - 10:
                     assert result == ReceiveBlockResult.ALREADY_HAVE_BLOCK
-                elif reorg_block.sub_block_height < initial_block_count - 1:
+                elif reorg_block.height < initial_block_count - 1:
                     assert result == ReceiveBlockResult.ADDED_AS_ORPHAN
-                elif reorg_block.sub_block_height >= initial_block_count:
+                elif reorg_block.height >= initial_block_count:
                     assert result == ReceiveBlockResult.NEW_PEAK
-                    if reorg_block.is_block():
+                    if reorg_block.is_transaction_block():
                         coins = reorg_block.get_included_reward_coins()
                         records: List[Optional[CoinRecord]] = [
                             await coin_store.get_coin_record(coin.name()) for coin in coins
@@ -221,7 +242,7 @@ class TestCoinStore:
                             assert record.confirmed_block_index == reorg_block.height
                             assert record.spent_block_index == 0
                 assert error_code is None
-            assert b.get_peak().sub_block_height == initial_block_count - 10 + reorg_length - 1
+            assert b.get_peak().height == initial_block_count - 10 + reorg_length - 1
         except Exception as e:
             await connection.close()
             Path("blockchain_test.db").unlink()
@@ -234,8 +255,8 @@ class TestCoinStore:
 
     @pytest.mark.asyncio
     async def test_get_puzzle_hash(self):
-        num_blocks = 10
-        blocks = bt.get_consecutive_blocks(num_blocks, guarantee_block=True)
+        num_blocks = 20
+        blocks = bt.get_consecutive_blocks(num_blocks, guarantee_transaction_block=True)
         db_path = Path("blockchain_test.db")
         if db_path.exists():
             db_path.unlink()
@@ -243,20 +264,17 @@ class TestCoinStore:
         coin_store = await CoinStore.create(connection)
         store = await BlockStore.create(connection)
         b: Blockchain = await Blockchain.create(coin_store, store, test_constants)
-        last_block_height = 0
         for block in blocks:
             res, err, _ = await b.receive_block(block)
             assert err is None
             assert res == ReceiveBlockResult.NEW_PEAK
-            if block.is_block() and block.header_hash != blocks[-1].header_hash:
-                last_block_height = block.height
-        assert b.get_peak().sub_block_height == num_blocks - 1
+        assert b.get_peak().height == num_blocks - 1
 
-        pool_coin, farmer_coin = blocks[-2].get_future_reward_coins(last_block_height + 1)
+        pool_coin, farmer_coin = get_future_reward_coins(blocks[-2])
 
         coins_farmer = await coin_store.get_coin_records_by_puzzle_hash(farmer_coin.puzzle_hash)
         coins_pool = await coin_store.get_coin_records_by_puzzle_hash(pool_coin.puzzle_hash)
-        assert len(coins_farmer) == num_blocks - 1
+        assert len(coins_farmer) == num_blocks - 2
         assert len(coins_pool) == num_blocks - 2
 
         await connection.close()

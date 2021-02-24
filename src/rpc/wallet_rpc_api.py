@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple, Dict, Callable
 
 from blspy import PrivateKey
 
+from src.protocols.protocol_message_types import ProtocolMessageTypes
 from src.util.byte_types import hexstr_to_bytes
 from src.util.bech32m import encode_puzzle_hash, decode_puzzle_hash
 from src.util.keychain import (
@@ -17,10 +18,10 @@ from src.util.path import path_from_root
 from src.util.ws_message import create_payload
 
 from src.cmds.init import check_keys
-from src.server.outbound_message import NodeType, Message
+from src.server.outbound_message import NodeType, make_msg
 from src.simulator.simulator_protocol import FarmNewBlockProtocol
 from src.util.ints import uint64, uint32
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.wallet.trade_record import TradeRecord
 from src.wallet.util.backup_utils import get_backup_info, download_backup, upload_backup
 from src.wallet.util.trade_utils import trade_record_to_dict
@@ -272,7 +273,7 @@ class WalletRpcApi:
     async def farm_block(self, request):
         raw_puzzle_hash = decode_puzzle_hash(request["address"])
         request = FarmNewBlockProtocol(raw_puzzle_hash)
-        msg = Message("farm_new_block", request)
+        msg = make_msg(ProtocolMessageTypes.farm_new_block, request)
 
         await self.service.server.send_to_all([msg], NodeType.FULL_NODE)
         return {}
@@ -371,15 +372,15 @@ class WalletRpcApi:
         pending_balance = await wallet.get_unconfirmed_balance(unspent_records)
         spendable_balance = await wallet.get_spendable_balance(unspent_records)
         pending_change = await wallet.get_pending_change_balance()
-        frozen_balance = 0
+        max_send_amount = await wallet.get_max_send_amount(unspent_records)
 
         wallet_balance = {
             "wallet_id": wallet_id,
             "confirmed_wallet_balance": balance,
             "unconfirmed_wallet_balance": pending_balance,
             "spendable_balance": spendable_balance,
-            "frozen_balance": frozen_balance,
             "pending_change": pending_change,
+            "max_send_amount": max_send_amount,
         }
 
         return {"wallet_balance": wallet_balance}

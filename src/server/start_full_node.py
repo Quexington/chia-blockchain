@@ -1,3 +1,4 @@
+import logging
 import pathlib
 
 from multiprocessing import freeze_support
@@ -18,12 +19,20 @@ from src.util.default_root import DEFAULT_ROOT_PATH
 "".encode("idna")
 
 SERVICE_NAME = "full_node"
+log = logging.getLogger(__name__)
 
 
 def service_kwargs_for_full_node(
     root_path: pathlib.Path, config: Dict, consensus_constants: ConsensusConstants
 ) -> Dict:
-    full_node = FullNode(config, root_path=root_path, consensus_constants=consensus_constants)
+    overrides = config["network_overrides"][config["selected_network"]]
+    updated_constants = consensus_constants.replace_str_to_bytes(**overrides)
+
+    full_node = FullNode(
+        config,
+        root_path=root_path,
+        consensus_constants=updated_constants,
+    )
     api = FullNodeAPI(full_node)
 
     upnp_list = []
@@ -40,6 +49,7 @@ def service_kwargs_for_full_node(
         upnp_ports=upnp_list,
         server_listen_ports=[config["port"]],
         on_connect_callback=full_node.on_connect,
+        network_id=updated_constants.GENESIS_CHALLENGE,
     )
     if config["start_rpc_server"]:
         kwargs["rpc_info"] = (FullNodeRpcApi, config["rpc_port"])

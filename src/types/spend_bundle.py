@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from typing import List
 
-from src.types.coin import Coin
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.coin import Coin
+from src.types.announcement import Announcement
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.streamable import Streamable, streamable
 from .coin_solution import CoinSolution
 from blspy import G2Element, AugSchemeMPL
@@ -35,6 +36,12 @@ class SpendBundle(Streamable):
         items: List[Coin] = []
         for coin_solution in self.coin_solutions:
             items.extend(coin_solution.additions())
+        return items
+
+    def announcements(self) -> List[Announcement]:
+        items: List[Announcement] = []
+        for coin_solution in self.coin_solutions:
+            items.extend(coin_solution.announcements())
         return items
 
     def removals(self) -> List[Coin]:

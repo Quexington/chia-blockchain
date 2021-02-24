@@ -21,8 +21,8 @@ from blspy import G1Element, PrivateKey
 
 from clvm.casts import int_from_bytes
 
-from src.types.program import Program
-from src.types.sized_bytes import bytes32
+from src.types.blockchain_format.program import Program
+from src.types.blockchain_format.sized_bytes import bytes32
 
 from .load_clvm import load_clvm
 from .p2_conditions import puzzle_for_conditions
@@ -95,6 +95,6 @@ def solution_with_hidden_puzzle(
     return Program.to([puzzle, [hidden_public_key, hidden_puzzle, solution_to_hidden_puzzle]])
 
 
-def solution_for_conditions(conditions: Program) -> Program:
+def solution_for_conditions(conditions) -> Program:
     delegated_puzzle = puzzle_for_conditions(conditions)
     return solution_for_delegated_puzzle(delegated_puzzle, Program.to(0))

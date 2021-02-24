@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import List
 
-from src.types.coin import Coin
+from src.types.blockchain_format.coin import Coin
 from src.types.header_block import HeaderBlock
 from src.util.streamable import Streamable, streamable
 
@@ -29,10 +29,6 @@ class HeaderBlockRecord(Streamable):
     @property
     def height(self):
         return self.header.height
-
-    @property
-    def sub_block_height(self):
-        return self.header.sub_block_height
 
     @property
     def transactions_filter(self):

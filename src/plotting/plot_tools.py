@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Tuple, Set
+from typing import List, Dict, Optional, Tuple, Set, Union
 from pathlib import Path
 from blspy import PrivateKey, G1Element
 from chiapos import DiskProver
@@ -8,7 +8,8 @@ import logging
 import traceback
 
 from src.consensus.pos_quality import _expected_plot_size, UI_ACTUAL_SPACE_CONSTANT_FACTOR
-from src.types.proof_of_space import ProofOfSpace
+from src.types.blockchain_format.proof_of_space import ProofOfSpace
+from src.types.blockchain_format.sized_bytes import bytes32
 from src.util.config import load_config, save_config
 from src.wallet.derive_keys import master_sk_to_local_sk
 
@@ -19,7 +20,8 @@ log = logging.getLogger(__name__)
 @dataclass
 class PlotInfo:
     prover: DiskProver
-    pool_public_key: G1Element
+    pool_public_key: Optional[G1Element]
+    pool_contract_puzzle_hash: Optional[bytes32]
     farmer_public_key: G1Element
     plot_public_key: G1Element
     local_sk: PrivateKey
@@ -59,24 +61,47 @@ def get_plot_filenames(config: Dict) -> Dict[Path, List[Path]]:
     return all_files
 
 
-def parse_plot_info(memo: bytes) -> Tuple[G1Element, G1Element, PrivateKey]:
+def parse_plot_info(memo: bytes) -> Tuple[Union[G1Element, bytes32], G1Element, PrivateKey]:
     # Parses the plot info bytes into keys
-    assert len(memo) == (48 + 48 + 32)
-    return (
-        G1Element.from_bytes(memo[:48]),
-        G1Element.from_bytes(memo[48:96]),
-        PrivateKey.from_bytes(memo[96:]),
-    )
+    if len(memo) == (48 + 48 + 32):
+        # This is a public key memo
+        return (
+            G1Element.from_bytes(memo[:48]),
+            G1Element.from_bytes(memo[48:96]),
+            PrivateKey.from_bytes(memo[96:]),
+        )
+    elif len(memo) == (32 + 48 + 32):
+        # This is a pool_contract_puzzle_hash memo
+        return (
+            bytes32(memo[:32]),
+            G1Element.from_bytes(memo[32:80]),
+            PrivateKey.from_bytes(memo[80:]),
+        )
+    else:
+        raise ValueError(f"Invalid number of bytes {len(memo)}")
 
 
-def stream_plot_info(
+def stream_plot_info_pk(
     pool_public_key: G1Element,
     farmer_public_key: G1Element,
     local_master_sk: PrivateKey,
 ):
-    # Streams the plot info keys into bytes
+    # There are two ways to stream plot info: with a pool public key, or with a pool contract puzzle hash.
+    # This one streams the public key, into bytes
     data = bytes(pool_public_key) + bytes(farmer_public_key) + bytes(local_master_sk)
     assert len(data) == (48 + 48 + 32)
+    return data
+
+
+def stream_plot_info_ph(
+    pool_contract_puzzle_hash: bytes32,
+    farmer_public_key: G1Element,
+    local_master_sk: PrivateKey,
+):
+    # There are two ways to stream plot info: with a pool public key, or with a pool contract puzzle hash.
+    # This one streams the pool contract puzzle hash, into bytes
+    data = pool_contract_puzzle_hash + bytes(farmer_public_key) + bytes(local_master_sk)
+    assert len(data) == (32 + 48 + 32)
     return data
 
 
@@ -115,6 +140,7 @@ def load_plots(
     farmer_public_keys: Optional[List[G1Element]],
     pool_public_keys: Optional[List[G1Element]],
     match_str: Optional[str],
+    show_memo: bool,
     root_path: Path,
     open_no_key_filenames=False,
 ) -> Tuple[bool, Dict[Path, PlotInfo], Dict[Path, int], Set[Path]]:
@@ -130,6 +156,7 @@ def load_plots(
         all_filenames += paths
     total_size = 0
     new_provers: Dict[Path, PlotInfo] = {}
+    plot_ids: Set[bytes32] = set()
 
     if match_str is not None:
         log.info(f'Only loading plots that contain "{match_str}" in the file or directory name')
@@ -143,14 +170,20 @@ def load_plots(
                 # Try once every 20 minutes to open the file
                 continue
             if filename in provers:
-                stat_info = filename.stat()
+                try:
+                    stat_info = filename.stat()
+                except Exception as e:
+                    log.error(f"Failed to open file {filename}. {e}")
+                    continue
                 if stat_info.st_mtime == provers[filename].time_modified:
                     total_size += stat_info.st_size
                     new_provers[filename] = provers[filename]
+                    plot_ids.add(provers[filename].prover.get_id())
                     continue
             try:
                 prover = DiskProver(str(filename))
-                expected_size = _expected_plot_size(prover.get_size()) * UI_ACTUAL_SPACE_CONSTANT_FACTOR / 2.0
+
+                expected_size = _expected_plot_size(prover.get_size()) * UI_ACTUAL_SPACE_CONSTANT_FACTOR
                 stat_info = filename.stat()
 
                 # TODO: consider checking if the file was just written to (which would mean that the file is still
@@ -163,11 +196,16 @@ def load_plots(
                     )
                     continue
 
+                if prover.get_id() in plot_ids:
+                    log.warning(f"Have multiple copies of the plot {filename}, not adding it.")
+                    continue
+
                 (
-                    pool_public_key,
+                    pool_public_key_or_puzzle_hash,
                     farmer_public_key,
                     local_master_sk,
                 ) = parse_plot_info(prover.get_memo())
+
                 # Only use plots that correct keys associated with them
                 if farmer_public_keys is not None and farmer_public_key not in farmer_public_keys:
                     log.warning(f"Plot {filename} has a farmer public key that is not in the farmer's pk list.")
@@ -175,7 +213,19 @@ def load_plots(
                     if not open_no_key_filenames:
                         continue
 
-                if pool_public_keys is not None and pool_public_key not in pool_public_keys:
+                if isinstance(pool_public_key_or_puzzle_hash, G1Element):
+                    pool_public_key = pool_public_key_or_puzzle_hash
+                    pool_contract_puzzle_hash = None
+                else:
+                    assert isinstance(pool_public_key_or_puzzle_hash, bytes32)
+                    pool_public_key = None
+                    pool_contract_puzzle_hash = pool_public_key_or_puzzle_hash
+
+                if (
+                    pool_public_keys is not None
+                    and pool_public_key is not None
+                    and pool_public_key not in pool_public_keys
+                ):
                     log.warning(f"Plot {filename} has a pool public key that is not in the farmer's pool pk list.")
                     no_key_filenames.add(filename)
                     if not open_no_key_filenames:
@@ -187,12 +237,14 @@ def load_plots(
                 new_provers[filename] = PlotInfo(
                     prover,
                     pool_public_key,
+                    pool_contract_puzzle_hash,
                     farmer_public_key,
                     plot_public_key,
                     local_sk,
                     stat_info.st_size,
                     stat_info.st_mtime,
                 )
+                plot_ids.add(prover.get_id())
                 total_size += stat_info.st_size
                 changed = True
             except Exception as e:
@@ -202,6 +254,15 @@ def load_plots(
                 continue
             log.info(f"Found plot {filename} of size {new_provers[filename].prover.get_size()}")
 
+            if show_memo:
+                plot_memo: bytes32
+                if pool_contract_puzzle_hash is None:
+                    plot_memo = stream_plot_info_pk(pool_public_key, farmer_public_key, local_master_sk)
+                else:
+                    plot_memo = stream_plot_info_ph(pool_contract_puzzle_hash, farmer_public_key, local_master_sk)
+                plot_memo_str: str = plot_memo.hex()
+                log.info(f"Memo: {plot_memo_str}")
+
     log.info(
         f"Loaded a total of {len(new_provers)} plots of size {total_size / (1024 ** 4)} TiB, in"
         f" {time.time()-start_time} seconds"
@@ -209,30 +270,32 @@ def load_plots(
     return changed, new_provers, failed_to_open_filenames, no_key_filenames
 
 
-def find_duplicate_plot_IDs(all_filenames: List[Path] = []) -> None:
-    plot_IDs_set = set()
-    duplicate_plot_IDs = set()
+def find_duplicate_plot_IDs(all_filenames=None) -> None:
+    if all_filenames is None:
+        all_filenames = []
+    plot_ids_set = set()
+    duplicate_plot_ids = set()
     all_filenames_str: List[str] = []
 
     for filename in all_filenames:
         filename_str: str = str(filename)
         all_filenames_str.append(filename_str)
         filename_parts: List[str] = filename_str.split("-")
-        plot_ID: str = filename_parts[-1]
+        plot_id: str = filename_parts[-1]
         # Skipped parsing and verifying plot ID for faster performance
         # Skipped checking K size for faster performance
         # Only checks end of filenames: 64 char plot ID + .plot = 69 characters
-        if len(plot_ID) == 69:
-            if plot_ID in plot_IDs_set:
-                duplicate_plot_IDs.add(plot_ID)
+        if len(plot_id) == 69:
+            if plot_id in plot_ids_set:
+                duplicate_plot_ids.add(plot_id)
             else:
-                plot_IDs_set.add(plot_ID)
+                plot_ids_set.add(plot_id)
         else:
             log.warning(f"{filename} does not end with -[64 char plot ID].plot")
 
-    for plot_ID in duplicate_plot_IDs:
-        log_message: str = plot_ID + " found in multiple files:\n"
-        duplicate_filenames: List[str] = [filename_str for filename_str in all_filenames_str if plot_ID in filename_str]
+    for plot_id in duplicate_plot_ids:
+        log_message: str = plot_id + " found in multiple files:\n"
+        duplicate_filenames: List[str] = [filename_str for filename_str in all_filenames_str if plot_id in filename_str]
         for filename_str in duplicate_filenames:
             log_message += "\t" + filename_str + "\n"
         log.warning(f"{log_message}")
