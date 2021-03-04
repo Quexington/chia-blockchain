@@ -41,7 +41,7 @@ from src.util.hash import std_hash
 from src.util.ints import uint128, uint64, uint32, uint8
 from src.util.merkle_set import MerkleSet
 from src.util.prev_transaction_block import get_prev_transaction_block
-from tests.recursive_replace import recursive_replace
+from src.util.recursive_replace import recursive_replace
 
 
 def create_foliage(
@@ -127,7 +127,6 @@ def create_foliage(
 
     solution_program: Optional[SerializedProgram] = None
     if is_transaction_block:
-        spend_bundle_fees: int = 0
         aggregate_sig: G2Element = G2Element.infinity()
         cost = uint64(0)
 

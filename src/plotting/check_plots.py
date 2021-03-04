@@ -13,10 +13,9 @@ from src.wallet.derive_keys import master_sk_to_farmer_sk
 log = logging.getLogger(__name__)
 
 
-def check_plots(args, root_path):
+def check_plots(root_path, num, challenge_start, grep_string, list_duplicates, debug_show_memo):
     config = load_config(root_path, "config.yaml")
-    if args.num is not None:
-        num = args.num
+    if num is not None:
         if num == 0:
             log.warning("Not opening plot files")
         else:
@@ -28,25 +27,25 @@ def check_plots(args, root_path):
     else:
         num = 30
 
-    if args.challenge_start is not None:
-        num_start = args.challenge_start
+    if challenge_start is not None:
+        num_start = challenge_start
         num_end = num_start + num
     else:
         num_start = 0
         num_end = num
     challenges = num_end - num_start
 
-    if args.grep_string is not None:
-        match_str = args.grep_string
+    if grep_string is not None:
+        match_str = grep_string
     else:
         match_str = None
-    if args.list_duplicates:
+    if list_duplicates:
         log.warning("Checking for duplicate Plot IDs")
         log.info("Plot filenames expected to end with -[64 char plot ID].plot")
 
-    show_memo: bool = args.debug_show_memo
+    show_memo: bool = debug_show_memo
 
-    if args.list_duplicates:
+    if list_duplicates:
         plot_filenames: Dict[Path, List[Path]] = get_plot_filenames(config["harvester"])
         all_filenames: List[Path] = []
         for paths in plot_filenames.values():
@@ -86,19 +85,19 @@ def check_plots(args, root_path):
         log.info(f"\tFarmer public key: {plot_info.farmer_public_key}")
         log.info(f"\tLocal sk: {plot_info.local_sk}")
         total_proofs = 0
-        try:
-            for i in range(num_start, num_end):
-                challenge = std_hash(i.to_bytes(32, "big"))
-                for index, quality_str in enumerate(pr.get_qualities_for_challenge(challenge)):
+        for i in range(num_start, num_end):
+            challenge = std_hash(i.to_bytes(32, "big"))
+            for index, quality_str in enumerate(pr.get_qualities_for_challenge(challenge)):
+                try:
                     proof = pr.get_full_proof(challenge, index)
                     total_proofs += 1
                     ver_quality_str = v.validate_proof(pr.get_id(), pr.get_size(), challenge, proof)
                     assert quality_str == ver_quality_str
-        except BaseException as e:
-            if isinstance(e, KeyboardInterrupt):
-                log.warning("Interrupted, closing")
-                return
-            log.error(f"{type(e)}: {e} error in proving/verifying for plot {plot_path}")
+                except BaseException as e:
+                    if isinstance(e, KeyboardInterrupt):
+                        log.warning("Interrupted, closing")
+                        return
+                    log.error(f"{type(e)}: {e} error in proving/verifying for plot {plot_path}")
         if total_proofs > 0:
             log.info(f"\tProofs {total_proofs} / {challenges}, {round(total_proofs/float(challenges), 4)}")
             total_good_plots[pr.get_size()] += 1

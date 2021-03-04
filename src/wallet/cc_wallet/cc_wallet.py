@@ -450,8 +450,9 @@ class CCWallet:
     async def get_pending_change_balance(self) -> uint64:
         unconfirmed_tx = await self.wallet_state_manager.tx_store.get_unconfirmed_for_wallet(self.id())
         addition_amount = 0
-
         for record in unconfirmed_tx:
+            if not record.is_in_mempool():
+                continue
             our_spend = False
             for coin in record.removals:
                 # Don't count eve spend as change
@@ -532,9 +533,7 @@ class CCWallet:
         pubkey, private = await self.wallet_state_manager.get_keys(puzzle_hash)
         synthetic_secret_key = calculate_synthetic_secret_key(private, DEFAULT_HIDDEN_PUZZLE_HASH)
         sigs: List[G2Element] = []
-        code_ = [innerpuz, innersol]
-        sexp = Program.to(code_)
-        error, conditions, cost = conditions_dict_for_solution(sexp)
+        error, conditions, cost = conditions_dict_for_solution(innerpuz, innersol)
         if conditions is not None:
             for _, msg in pkm_pairs_for_conditions_dict(conditions, coin_name):
                 signature = AugSchemeMPL.sign(synthetic_secret_key, msg)
@@ -725,9 +724,7 @@ class CCWallet:
                 None,
                 None,
             ]
-            full_solution = Program.to([puzzle_reveal, solution])
-
-            list_of_solutions.append(CoinSolution(coin, full_solution))
+            list_of_solutions.append(CoinSolution(coin, puzzle_reveal, Program.to(solution)))
 
         aggsig = AugSchemeMPL.aggregate(sigs)
         return SpendBundle(list_of_solutions, aggsig)

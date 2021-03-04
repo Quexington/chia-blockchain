@@ -368,8 +368,16 @@ class WalletStateManager:
     async def synced(self):
         if self.sync_mode is True:
             return False
-        full_peak = await self.blockchain.get_full_peak()
-        if full_peak is not None and full_peak.foliage_transaction_block.timestamp > int(time.time()) - 10 * 60:
+        peak: Optional[BlockRecord] = self.blockchain.get_peak()
+        if peak is None:
+            return False
+
+        curr = peak
+        while not curr.is_transaction_block and not curr.height == 0:
+            curr = self.blockchain.try_block_record(curr.prev_hash)
+            if curr is None:
+                return False
+        if curr.is_transaction_block and curr.timestamp > int(time.time()) - 7 * 60:
             return True
         return False
 
@@ -488,8 +496,8 @@ class WalletStateManager:
         farmer_rewards = set()
 
         prev = await self.blockchain.get_block_record_from_db(block.prev_hash)
-        # [sub 1] [sub 2] [block 3] [sub 4] [sub 5] [block6]
-        # [block 6] will contain rewards for [sub 1] [sub 2] [block 3]
+        # [block 1] [block 2] [tx block 3] [block 4] [block 5] [tx block 6]
+        # [tx block 6] will contain rewards for [block 1] [block 2] [tx block 3]
         while prev is not None:
             # step 1 find previous block
             if prev.is_transaction_block:

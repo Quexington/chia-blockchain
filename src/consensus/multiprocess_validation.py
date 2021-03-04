@@ -12,6 +12,7 @@ from src.consensus.cost_calculator import CostResult, calculate_cost_of_program
 from src.consensus.difficulty_adjustment import get_sub_slot_iters_and_difficulty
 from src.consensus.full_block_to_block_record import block_to_block_record
 from src.consensus.get_block_challenge import get_block_challenge
+from src.consensus.network_type import NetworkType
 from src.consensus.pot_iterations import is_overflow_block, calculate_iterations_quality
 from src.consensus.block_record import BlockRecord
 from src.types.full_block import FullBlock
@@ -42,6 +43,7 @@ def batch_pre_validate_blocks(
     check_filter: bool,
     expected_difficulty: List[uint64],
     expected_sub_slot_iters: List[uint64],
+    validate_transactions: bool,
 ) -> List[bytes]:
     assert len(header_blocks_pickled) == len(transaction_generators)
     blocks = {}
@@ -61,14 +63,17 @@ def batch_pre_validate_blocks(
                 expected_difficulty[i],
                 expected_sub_slot_iters[i],
             )
-            cost_result = None
+            cost_result: Optional[CostResult] = None
             error_int: Optional[uint16] = None
             if error is not None:
                 error_int = uint16(error.code.value)
-            if not error and generator is not None:
-                cost_result = calculate_cost_of_program(
-                    SerializedProgram.from_bytes(generator), constants.CLVM_COST_RATIO_CONSTANT
-                )
+            if constants_dict["NETWORK"] == NetworkType.MAINNET.value:
+                cost_result = None
+            else:
+                if not error and generator is not None and validate_transactions:
+                    cost_result = calculate_cost_of_program(
+                        SerializedProgram.from_bytes(generator), constants.CLVM_COST_RATIO_CONSTANT
+                    )
             results.append(PreValidationResult(error_int, required_iters, cost_result))
         except Exception:
             error_stack = traceback.format_exc()
@@ -83,6 +88,8 @@ async def pre_validate_blocks_multiprocessing(
     block_records: BlockchainInterface,
     blocks: Sequence[Union[FullBlock, HeaderBlock]],
     pool: ProcessPoolExecutor,
+    validate_transactions: bool,
+    check_filter: bool,
 ) -> Optional[List[PreValidationResult]]:
     """
     This method must be called under the blockchain lock
@@ -90,6 +97,8 @@ async def pre_validate_blocks_multiprocessing(
     if any validation issue occurs, returns False.
 
     Args:
+        check_filter:
+        validate_transactions:
         constants_json:
         pool:
         constants:
@@ -208,9 +217,10 @@ async def pre_validate_blocks_multiprocessing(
                 final_pickled,
                 hb_pickled,
                 generators,
-                True,
+                check_filter,
                 [diff_ssis[j][0] for j in range(i, end_i)],
                 [diff_ssis[j][1] for j in range(i, end_i)],
+                validate_transactions,
             )
         )
     # Collect all results into one flat list

@@ -112,7 +112,7 @@ class WalletNode:
         self.logged_in_fingerprint: Optional[int] = None
         self.peer_task = None
 
-    def get_key_for_fingerprint(self, fingerprint):
+    def get_key_for_fingerprint(self, fingerprint: Optional[int]):
         private_keys = self.keychain.get_all_private_keys()
         if len(private_keys) == 0:
             self.log.warning("No keys present. Create keys with the UI, or with the 'chia keys' program.")
@@ -441,7 +441,9 @@ class WalletNode:
                 weight_proof = weight_proof_response.wp
                 if self.wallet_state_manager is None:
                     return
-                valid, fork_point = self.wallet_state_manager.weight_proof_handler.validate_weight_proof(weight_proof)
+                valid, fork_point = await self.wallet_state_manager.weight_proof_handler.validate_weight_proof(
+                    weight_proof
+                )
                 if not valid:
                     self.log.error(
                         f"invalid weight proof, num of epochs {len(weight_proof.sub_epochs)}"

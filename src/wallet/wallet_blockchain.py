@@ -142,19 +142,6 @@ class WalletBlockchain(BlockchainInterface):
             return None
         return self.height_to_block_record(self._peak_height)
 
-    async def get_full_peak(self) -> Optional[HeaderBlock]:
-        """ Return a peak transaction block"""
-        if self._peak_height is None:
-            return None
-        curr: Optional[BlockRecord] = self.height_to_block_record(self._peak_height)
-        while curr is not None and not curr.is_transaction_block:
-            curr = self.try_block_record(curr.prev_hash)
-        if curr is None:
-            return None
-        block = await self.block_store.get_header_block(curr.header_hash)
-        assert block is not None
-        return block
-
     def is_child_of_peak(self, block: UnfinishedBlock) -> bool:
         """
         True iff the block is the direct ancestor of the peak
@@ -245,7 +232,7 @@ class WalletBlockchain(BlockchainInterface):
 
         fork_height: Optional[uint32] = await self._reconsider_peak(block_record, genesis, fork_point_with_peak)
         if fork_height is not None:
-            self.log.info(f"💰 Updated wallet peak to sub height {block_record.height}, weight {block_record.weight}, ")
+            self.log.info(f"💰 Updated wallet peak to height {block_record.height}, weight {block_record.weight}, ")
             return ReceiveBlockResult.NEW_PEAK, None, fork_height
         else:
             return ReceiveBlockResult.ADDED_AS_ORPHAN, None, None
@@ -366,7 +353,9 @@ class WalletBlockchain(BlockchainInterface):
         self,
         blocks: List[HeaderBlock],
     ) -> Optional[List[PreValidationResult]]:
-        return await pre_validate_blocks_multiprocessing(self.constants, self.constants_json, self, blocks, self.pool)
+        return await pre_validate_blocks_multiprocessing(
+            self.constants, self.constants_json, self, blocks, self.pool, True, True
+        )
 
     def contains_block(self, header_hash: bytes32) -> bool:
         """
@@ -435,8 +424,9 @@ class WalletBlockchain(BlockchainInterface):
 
     def clean_block_records(self):
         """
-        Cleans the cache so that we only maintain relevant blocks. This removes block records that have sub
-        height < peak - BLOCKS_CACHE_SIZE. These blocks are necessary for calculating future difficulty adjustments.
+        Cleans the cache so that we only maintain relevant blocks.
+        This removes block records that have height < peak - BLOCKS_CACHE_SIZE.
+        These blocks are necessary for calculating future difficulty adjustments.
         """
 
         if len(self.__block_records) < self.constants.BLOCKS_CACHE_SIZE:
