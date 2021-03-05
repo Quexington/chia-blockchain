@@ -15,19 +15,21 @@ from concurrent.futures import ThreadPoolExecutor
 from websockets import serve, ConnectionClosedOK, WebSocketException, WebSocketServerProtocol
 from src.cmds.init import chia_init
 from src.daemon.windows_signal import kill
-from src.server.server import ssl_context_for_server
+from src.server.server import ssl_context_for_server, ssl_context_for_root
+from src.ssl.create_ssl import get_mozzila_ca_crt
 from src.util.setproctitle import setproctitle
+from src.util.validate_alert import validate_alert
 from src.util.ws_message import format_response, create_payload
 from src.util.json_util import dict_to_json_str
-from src.util.config import load_config
-from src.util.logging import initialize_logging
+from src.util.config import load_config, save_config
+from src.util.chia_logging import initialize_logging
 from src.util.path import mkdir
 from src.util.service_groups import validate_service
 
 io_pool_exc = ThreadPoolExecutor()
 
 try:
-    from aiohttp import web
+    from aiohttp import web, ClientSession
 except ModuleNotFoundError:
     print("Error: Make sure to run . ./activate from the project folder before starting Chia.")
     quit()
@@ -42,6 +44,20 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 service_plotter = "chia plots create"
+
+
+async def fetch(url: str):
+    session = ClientSession()
+    try:
+        mozzila_root = get_mozzila_ca_crt()
+        ssl_context = ssl_context_for_root(mozzila_root)
+        response = await session.get(url, ssl=ssl_context)
+        await session.close()
+        return await response.text()
+    except Exception as e:
+        await session.close()
+        log.error(f"Exception while fetching {url}, exception: {e}")
+        return None
 
 
 class PlotState(str, Enum):
@@ -88,6 +104,9 @@ async def ping():
     return response
 
 
+not_launched_error_message = "Network not launched yet, waiting for genesis challenge"
+
+
 class WebSocketServer:
     def __init__(self, root_path: Path, ca_crt_path: Path, ca_key_path: Path, crt_path: Path, key_path: Path):
         self.root_path = root_path
@@ -102,6 +121,8 @@ class WebSocketServer:
         self.daemon_port = self.net_config["daemon_port"]
         self.websocket_server = None
         self.ssl_context = ssl_context_for_server(ca_crt_path, ca_key_path, crt_path, key_path)
+        self.shut_down = False
+        self.genesis_initialized = False
 
     async def start(self):
         self.log.info("Starting Daemon Server")
@@ -124,11 +145,16 @@ class WebSocketServer:
             ping_timeout=300,
             ssl=self.ssl_context,
         )
+        selected = self.net_config["selected_network"]
+        challenge = self.net_config["network_overrides"]["constants"][selected]["GENESIS_CHALLENGE"]
 
+        if challenge is None:
+            self.genesis_initialized = False
+            self.alert_task = asyncio.create_task(self.check_for_alerts())
+        else:
+            self.alert_task = None
+            self.genesis_initialized = True
         self.log.info("Waiting Daemon WebSocketServer closure")
-        print("Daemon server started", flush=True)
-        await self.websocket_server.wait_closed()
-        self.log.info("Daemon WebSocketServer closed")
 
     def cancel_task_safe(self, task: Optional[asyncio.Task]):
         if task is not None:
@@ -138,10 +164,49 @@ class WebSocketServer:
                 self.log.error(f"Error while canceling task.{e} {task}")
 
     async def stop(self):
+        self.shut_down = True
         self.cancel_task_safe(self.ping_job)
         await self.exit()
         self.websocket_server.close()
+        self.cancel_task_safe(self.alert_task)
         return {"success": True}
+
+    async def check_for_alerts(self):
+        while True:
+            try:
+                if self.shut_down:
+                    break
+                await asyncio.sleep(2)
+
+                selected = self.net_config["selected_network"]
+                alert_url = self.net_config["ALERTS_URL"]
+                response = await fetch(alert_url)
+                if response is None:
+                    continue
+
+                json_response = json.loads(response)
+                if "data" in json_response:
+                    pubkey = self.net_config["CHIA_ALERTS_PUBKEY"]
+                    validated = validate_alert(response, pubkey)
+                    if validated is False:
+                        self.log.error(f"Error unable to validate alert! {response}")
+                        continue
+
+                    data = json_response["data"]
+                    data_json = json.loads(data)
+                    if data_json["ready"] is False:
+                        # Network not launched yet
+                        log.info("Network is not ready yet")
+                        continue
+
+                    challenge = data_json["genesis_challenge"]
+                    self.net_config["network_overrides"]["constants"][selected]["GENESIS_CHALLENGE"] = challenge
+                    save_config(self.root_path, "config.yaml", self.net_config)
+                    self.genesis_initialized = True
+                    await self.start_services()
+                    break
+            except Exception as e:
+                log.error(f"Exception in check alerts task: {e}")
 
     async def safe_handle(self, websocket: WebSocketServerProtocol, path: str):
         service_name = ""
@@ -245,6 +310,7 @@ class WebSocketServer:
             "stop_service",
             "is_running",
             "register_service",
+            "get_status",
         ]
         if not isinstance(data, dict) and command in commands_with_data:
             response = {"success": False, "error": f'{command} requires "data"'}
@@ -264,12 +330,18 @@ class WebSocketServer:
             response = await self.stop()
         elif command == "register_service":
             response = await self.register_service(websocket, cast(Dict[str, Any], data))
+        elif command == "get_status":
+            response = self.get_status()
         else:
             self.log.error(f"UK>> {message}")
             response = {"success": False, "error": f"unknown_command {command}"}
 
         full_response = format_response(message, response)
         return full_response, [websocket]
+
+    def get_status(self):
+        response = {"success": True, "genesis_initialized": self.genesis_initialized}
+        return response
 
     def plot_queue_to_payload(self, plot_queue_item):
         error = plot_queue_item.get("error")
@@ -504,6 +576,11 @@ class WebSocketServer:
 
         return response
 
+    async def start_services(self):
+        services = ["chia_full_node", "chia_farmer", "chia_harvester", "chia_wallet"]
+        for service in services:
+            await self.start_service({"service": service})
+
     async def stop_plotting(self, request: Dict[str, Any]):
         id = request["id"]
         config = self._get_plots_queue_item(id)
@@ -515,12 +592,15 @@ class WebSocketServer:
         process = config["process"]
 
         try:
+            run_next = False
             if process is not None and state == PlotState.RUNNING:
+                run_next = True
                 await kill_process(process, self.root_path, service_plotter, id)
             self.plots_queue.remove(config)
 
-            loop = asyncio.get_event_loop()
-            self._run_next_serial_plotting(loop)
+            if run_next:
+                loop = asyncio.get_event_loop()
+                self._run_next_serial_plotting(loop)
 
             self.state_changed(service_plotter, "removed")
             return {"success": True}
@@ -534,6 +614,14 @@ class WebSocketServer:
 
     async def start_service(self, request: Dict[str, Any]):
         service_command = request["service"]
+        if self.genesis_initialized is False:
+            response = {
+                "success": False,
+                "service": service_command,
+                "error": "Network not launched yet, waiting for genesis challenge",
+            }
+            return response
+
         error = None
         success = False
         testing = False
@@ -895,6 +983,9 @@ async def async_run_daemon(root_path: Path) -> int:
     create_server_for_daemon(root_path)
     ws_server = WebSocketServer(root_path, ca_crt_path, ca_key_path, crt_path, key_path)
     await ws_server.start()
+    assert ws_server.websocket_server is not None
+    await ws_server.websocket_server.wait_closed()
+    log.info("Daemon WebSocketServer closed")
     return 0
 
 

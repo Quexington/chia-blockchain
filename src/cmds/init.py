@@ -65,12 +65,14 @@ def check_keys(new_root):
     stop_searching_for_farmer = "xch_target_address" not in config["farmer"]
     stop_searching_for_pool = "xch_target_address" not in config["pool"]
     number_of_ph_to_search = 500
+    selected = config["selected_network"]
+    prefix = config["network_overrides"]["config"][selected]["address_prefix"]
     for i in range(number_of_ph_to_search):
         if stop_searching_for_farmer and stop_searching_for_pool and i > 0:
             break
         for sk, _ in all_sks:
             all_targets.append(
-                encode_puzzle_hash(create_puzzlehash_for_pk(master_sk_to_wallet_sk(sk, uint32(i)).get_g1()))
+                encode_puzzle_hash(create_puzzlehash_for_pk(master_sk_to_wallet_sk(sk, uint32(i)).get_g1()), prefix)
             )
             if all_targets[-1] == config["farmer"].get("xch_target_address"):
                 stop_searching_for_farmer = True
@@ -135,7 +137,7 @@ def migrate_from(
         print("same as new path, exiting")
         return 1
     if not old_root.is_dir():
-        print(f"{old_root} not found - this is ok if you did not install this version.")
+        print(f"{old_root} not found - this is ok if you did not install this version")
         return 0
     print(f"\n{old_root} found")
     print(f"Copying files from {old_root} to {new_root}\n")
@@ -241,7 +243,7 @@ def init(create_certs: Path, root_path: Path):
                 print(f"** Directory {create_certs} does not exist **")
         else:
             print(f"** {root_path} does not exist **")
-            print("** please run `chia init` to migrate or create new config files **")
+            print("** Please run `chia init` to migrate or create new config files **")
     else:
         return chia_init(root_path)
 
@@ -310,7 +312,7 @@ def chia_init(root_path: Path):
         print(
             f"warning, your CHIA_ROOT is set to {os.environ['CHIA_ROOT']}. "
             f"Please unset the environment variable and run chia init again\n"
-            f"or manually migrate config.yaml."
+            f"or manually migrate config.yaml"
         )
 
     print(f"Chia directory {root_path}")
@@ -398,7 +400,7 @@ def chia_init(root_path: Path):
     return 0
 
 
-@click.command("init", short_help="create or migrate to current")
+@click.command("init", short_help="Create or migrate the configuration")
 @click.option(
     "--create-certs",
     "-c",

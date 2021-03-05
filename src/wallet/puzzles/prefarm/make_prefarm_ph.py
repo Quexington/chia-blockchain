@@ -8,8 +8,8 @@ from src.util.condition_tools import parse_sexp_to_conditions
 from src.consensus.block_rewards import calculate_pool_reward, calculate_base_farmer_reward
 from src.util.ints import uint32
 
-address1 = "txch1k50glwkdffp2mrqq64rsgjtxj4waphuf72stqayz4qqk6mj9hd4qp7lrek"  # Gene wallet (m/12381/8444/2/51):
-address2 = "txch1430mtj60hvzyuyz4t45dyxwjdjsvphhl2fgreyry362reca4zpkszhjd3e"  # farmer1 key (m/12381/8444/2/51)
+address1 = "txch15gx26ndmacfaqlq8m0yajeggzceu7cvmaz4df0hahkukes695rss6lej7h"  # Gene wallet (m/12381/8444/2/42):
+address2 = "txch1c2cguswhvmdyz9hr3q6hak2h6p9dw4rz82g4707k2xy2sarv705qcce4pn"  # Mariano address (m/12381/8444/2/0)
 
 ph1 = decode_puzzle_hash(address1)
 ph2 = decode_puzzle_hash(address2)
@@ -30,8 +30,9 @@ def make_puzzle(amount: int) -> int:
     puzzle_hash = puzzle_prog.get_tree_hash()
 
     solution = "()"
+    prefix = "xch"
     print("PH", puzzle_hash)
-    print(f"Address: {encode_puzzle_hash(puzzle_hash)}")
+    print(f"Address: {encode_puzzle_hash(puzzle_hash, prefix)}")
 
     result = puzzle_prog.run(solution)
     error, result_human = parse_sexp_to_conditions(result)
@@ -45,7 +46,7 @@ def make_puzzle(amount: int) -> int:
             assert len(cvp.vars) == 2
             total_chia += int_from_bytes(cvp.vars[1])
             print(
-                f"{ConditionOpcode(cvp.opcode).name}: {encode_puzzle_hash(cvp.vars[0])},"
+                f"{ConditionOpcode(cvp.opcode).name}: {encode_puzzle_hash(cvp.vars[0], prefix)},"
                 f" amount: {int_from_bytes(cvp.vars[1])}"
             )
     return total_chia

@@ -70,18 +70,24 @@ from src.wallet.derive_keys import (
 )
 from src.consensus.default_constants import DEFAULT_CONSTANTS
 
+from src.plotting.plot_tools import parse_plot_info
+from src.wallet.derive_keys import master_sk_to_local_sk
+
+
 test_constants = DEFAULT_CONSTANTS.replace(
     **{
+        "MIN_PLOT_SIZE": 18,
+        "MIN_BLOCKS_PER_CHALLENGE_BLOCK": 12,
         "DIFFICULTY_STARTING": 2 ** 12,
         "DISCRIMINANT_SIZE_BITS": 16,
-        "SUB_EPOCH_BLOCKS": 140,
+        "SUB_EPOCH_BLOCKS": 170,
         "WEIGHT_PROOF_THRESHOLD": 2,
-        "WEIGHT_PROOF_RECENT_BLOCKS": 350,
+        "WEIGHT_PROOF_RECENT_BLOCKS": 380,
         "DIFFICULTY_CONSTANT_FACTOR": 33554432,
         "NUM_SPS_SUB_SLOT": 16,  # Must be a power of 2
         "MAX_SUB_SLOT_BLOCKS": 50,
-        "EPOCH_BLOCKS": 280,
-        "BLOCKS_CACHE_SIZE": 280 + 3 * 50,  # Coordinate with the above values
+        "EPOCH_BLOCKS": 340,
+        "BLOCKS_CACHE_SIZE": 340 + 3 * 50,  # Coordinate with the above values
         "SUB_SLOT_TIME_TARGET": 600,  # The target number of seconds per slot, mainnet 600
         "SUB_SLOT_ITERS_STARTING": 2 ** 10,  # Must be a multiple of 64
         "NUMBER_ZERO_BITS_PLOT_FILTER": 1,  # H(plot signature of the challenge) must start with these many zeroes
@@ -92,7 +98,7 @@ test_constants = DEFAULT_CONSTANTS.replace(
         "TX_PER_SEC": 1,
         "CLVM_COST_RATIO_CONSTANT": 108,
         "INITIAL_FREEZE_PERIOD": 0,
-        "NETWORK": 1,
+        "NETWORK_TYPE": 1,
     }
 )
 
@@ -148,13 +154,13 @@ class BlockTools:
         for service in ["harvester", "farmer", "full_node", "wallet", "introducer", "timelord", "pool"]:
             self._config[service]["selected_network"] = "testnet0"
         save_config(self.root_path, "config.yaml", self._config)
-        overrides = self._config["network_overrides"][self._config["selected_network"]]
+        overrides = self._config["network_overrides"]["constants"][self._config["selected_network"]]
         updated_constants = constants.replace_str_to_bytes(**overrides)
         if const_dict is not None:
             updated_constants = updated_constants.replace(**const_dict)
         self.constants = updated_constants
 
-    def init_plots(self, root_path):
+    def init_plots(self, root_path: Path):
         plot_dir = get_plot_dir()
         mkdir(plot_dir)
         temp_dir = plot_dir / "tmp"
@@ -195,7 +201,7 @@ class BlockTools:
             )
             # Create more plots, but to a pool address instead of public key
             args.pool_public_key = None
-            args.pool_contract_address = encode_puzzle_hash(self.pool_ph)
+            args.pool_contract_address = encode_puzzle_hash(self.pool_ph, "xch")
             args.num = num_pool_address_plots
             create_plots(
                 args,
@@ -217,9 +223,16 @@ class BlockTools:
         """
         farmer_sk = master_sk_to_farmer_sk(self.all_sks[0])
         for _, plot_info in self.plots.items():
-            agg_pk = ProofOfSpace.generate_plot_public_key(plot_info.local_sk.get_g1(), plot_info.farmer_public_key)
+            # Look up local_sk from plot to save locked memory
+            (
+                pool_public_key_or_puzzle_hash,
+                farmer_public_key,
+                local_master_sk,
+            ) = parse_plot_info(plot_info.prover.get_memo())
+            local_sk = master_sk_to_local_sk(local_master_sk)
+            agg_pk = ProofOfSpace.generate_plot_public_key(local_sk.get_g1(), farmer_public_key)
             if agg_pk == plot_pk:
-                harv_share = AugSchemeMPL.sign(plot_info.local_sk, m, agg_pk)
+                harv_share = AugSchemeMPL.sign(local_sk, m, agg_pk)
                 farm_share = AugSchemeMPL.sign(farmer_sk, m, agg_pk)
                 return AugSchemeMPL.aggregate([harv_share, farm_share])
 
@@ -254,6 +267,7 @@ class BlockTools:
         force_overflow: bool = False,
         skip_slots: int = 0,  # Force at least this number of empty slots before the first SB
         guarantee_transaction_block: bool = False,  # Force that this block must be a tx block
+        normalized_to_identity: bool = False,  # CC_EOS, ICC_EOS, CC_SP, CC_IP vdf proofs are normalized to identity.
     ) -> List[FullBlock]:
         assert num_blocks > 0
         if block_list_input is not None:
@@ -351,6 +365,7 @@ class BlockTools:
                         uint8(signage_point_index),
                         finished_sub_slots_at_sp,
                         sub_slot_iters,
+                        normalized_to_identity,
                     )
                     if signage_point_index == 0:
                         cc_sp_output_hash: bytes32 = slot_cc_challenge
@@ -422,6 +437,7 @@ class BlockTools:
                             signage_point,
                             latest_block,
                             seed,
+                            normalized_to_identity=normalized_to_identity,
                         )
                         if block_record.is_transaction_block:
                             transaction_data_included = True
@@ -482,7 +498,14 @@ class BlockTools:
             # End of slot vdf info for icc and cc have to be from challenge block or start of slot, respectively,
             # in order for light clients to validate.
             cc_vdf = VDFInfo(cc_vdf.challenge, sub_slot_iters, cc_vdf.output)
-
+            if normalized_to_identity:
+                _, cc_proof = get_vdf_info_and_proof(
+                    constants,
+                    ClassgroupElement.get_default_element(),
+                    cc_vdf.challenge,
+                    sub_slot_iters,
+                    True,
+                )
             if pending_ses:
                 sub_epoch_summary: Optional[SubEpochSummary] = None
             else:
@@ -525,6 +548,14 @@ class BlockTools:
                     icc_eos_iters,
                     icc_ip_vdf.output,
                 )
+                if normalized_to_identity:
+                    _, icc_ip_proof = get_vdf_info_and_proof(
+                        constants,
+                        ClassgroupElement.get_default_element(),
+                        icc_ip_vdf.challenge,
+                        icc_eos_iters,
+                        True,
+                    )
                 icc_sub_slot: Optional[InfusedChallengeChainSubSlot] = InfusedChallengeChainSubSlot(icc_ip_vdf)
                 assert icc_sub_slot is not None
                 icc_sub_slot_hash = icc_sub_slot.get_hash() if latest_block.deficit == 0 else None
@@ -587,6 +618,7 @@ class BlockTools:
                         uint8(signage_point_index),
                         finished_sub_slots_eos,
                         sub_slot_iters,
+                        normalized_to_identity,
                     )
                     if signage_point_index == 0:
                         cc_sp_output_hash = slot_cc_challenge
@@ -648,6 +680,7 @@ class BlockTools:
                             seed,
                             overflow_cc_challenge=overflow_cc_challenge,
                             overflow_rc_challenge=overflow_rc_challenge,
+                            normalized_to_identity=normalized_to_identity,
                         )
 
                         if block_record.is_transaction_block:
@@ -892,9 +925,17 @@ class BlockTools:
                     )
                     if required_iters < calculate_sp_interval_iters(constants, sub_slot_iters):
                         proof_xs: bytes = plot_info.prover.get_full_proof(new_challenge, proof_index)
+
+                        # Look up local_sk from plot to save locked memory
+                        (
+                            pool_public_key_or_puzzle_hash,
+                            farmer_public_key,
+                            local_master_sk,
+                        ) = parse_plot_info(plot_info.prover.get_memo())
+                        local_sk = master_sk_to_local_sk(local_master_sk)
                         plot_pk = ProofOfSpace.generate_plot_public_key(
-                            plot_info.local_sk.get_g1(),
-                            plot_info.farmer_public_key,
+                            local_sk.get_g1(),
+                            farmer_public_key,
                         )
                         proof_of_space: ProofOfSpace = ProofOfSpace(
                             new_challenge,
@@ -921,6 +962,7 @@ def get_signage_point(
     signage_point_index: uint8,
     finished_sub_slots: List[EndOfSubSlotBundle],
     sub_slot_iters: uint64,
+    normalized_to_identity: bool = False,
 ) -> SignagePoint:
     if signage_point_index == 0:
         return SignagePoint(None, None, None, None)
@@ -960,6 +1002,14 @@ def get_signage_point(
         rc_vdf_iters,
     )
     cc_sp_vdf = replace(cc_sp_vdf, number_of_iterations=sp_iters)
+    if normalized_to_identity:
+        _, cc_sp_proof = get_vdf_info_and_proof(
+            constants,
+            ClassgroupElement.get_default_element(),
+            cc_sp_vdf.challenge,
+            sp_iters,
+            True,
+        )
     return SignagePoint(cc_sp_vdf, cc_sp_proof, rc_sp_vdf, rc_sp_proof)
 
 
@@ -978,6 +1028,7 @@ def finish_block(
     latest_block: BlockRecord,
     sub_slot_iters: uint64,
     difficulty: uint64,
+    normalized_to_identity: bool = False,
 ):
     is_overflow = is_overflow_block(constants, signage_point_index)
     cc_vdf_challenge = slot_cc_challenge
@@ -996,6 +1047,14 @@ def finish_block(
         new_ip_iters,
     )
     cc_ip_vdf = replace(cc_ip_vdf, number_of_iterations=ip_iters)
+    if normalized_to_identity:
+        _, cc_ip_proof = get_vdf_info_and_proof(
+            constants,
+            ClassgroupElement.get_default_element(),
+            cc_ip_vdf.challenge,
+            ip_iters,
+            True,
+        )
     deficit = calculate_deficit(
         constants,
         uint32(latest_block.height + 1),
@@ -1072,7 +1131,7 @@ def get_plot_dir():
 
 
 def load_block_list(
-    block_list: List[FullBlock], constants
+    block_list: List[FullBlock], constants: ConsensusConstants
 ) -> Tuple[Dict[uint32, bytes32], uint64, Dict[uint32, BlockRecord]]:
     difficulty = 0
     height_to_hash: Dict[uint32, bytes32] = {}
@@ -1112,7 +1171,7 @@ def load_block_list(
 
 
 def get_icc(
-    constants,
+    constants: ConsensusConstants,
     vdf_end_total_iters: uint128,
     finished_sub_slots: List[EndOfSubSlotBundle],
     latest_block: BlockRecord,
@@ -1194,6 +1253,7 @@ def get_full_block_and_block_record(
     seed: bytes = b"",
     overflow_cc_challenge: bytes32 = None,
     overflow_rc_challenge: bytes32 = None,
+    normalized_to_identity: bool = False,
 ) -> Tuple[FullBlock, BlockRecord]:
     sp_iters = calculate_sp_iters(constants, sub_slot_iters, signage_point_index)
     ip_iters = calculate_ip_iters(constants, sub_slot_iters, signage_point_index, required_iters)
@@ -1240,6 +1300,7 @@ def get_full_block_and_block_record(
         prev_block,
         sub_slot_iters,
         difficulty,
+        normalized_to_identity,
     )
 
     return full_block, block_record

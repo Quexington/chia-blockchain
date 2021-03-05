@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.daemon.client import connect_to_daemon_and_validate, DaemonProxy
+from src.daemon.server import not_launched_error_message
 from src.util.service_groups import all_groups, services_for_groups
 
 
@@ -36,7 +37,7 @@ async def create_start_daemon_connection(root_path: Path) -> Optional[DaemonProx
 async def async_start(root_path: Path, group: str, restart: bool) -> None:
     daemon = await create_start_daemon_connection(root_path)
     if daemon is None:
-        print("failed to create the chia start daemon")
+        print("Failed to create the chia daemon")
         return
 
     for service in services_for_groups(group):
@@ -50,7 +51,7 @@ async def async_start(root_path: Path, group: str, restart: bool) -> None:
                 else:
                     print("stop failed")
             else:
-                print("already running, use `-r` to restart")
+                print("Already running, use `-r` to restart")
                 continue
         print(f"{service}: ", end="", flush=True)
         msg = await daemon.start_service(service_name=service)
@@ -60,12 +61,22 @@ async def async_start(root_path: Path, group: str, restart: bool) -> None:
             print("started")
         else:
             error = msg["data"]["error"]
-            print(f"{service} failed to start. Error: {error}")
+            if error == not_launched_error_message:
+                print("Waiting for genesis challenge, network not launched yet.")
+                while True:
+                    if await daemon.is_running(service_name=service):
+                        print("Network launched! ")
+                        break
+                    else:
+                        await asyncio.sleep(2)
+
+            else:
+                print(f"{service} failed to start. Error: {error}")
     await daemon.close()
 
 
-@click.command("start", short_help="start service groups")
-@click.option("-r", "--restart", is_flag=True, type=bool, help="Restart of running processes")
+@click.command("start", short_help="Start service groups")
+@click.option("-r", "--restart", is_flag=True, type=bool, help="Restart running services")
 @click.argument("group", type=click.Choice(all_groups()), nargs=-1, required=True)
 @click.pass_context
 def start_cmd(ctx: click.Context, restart: bool, group: str) -> None:
