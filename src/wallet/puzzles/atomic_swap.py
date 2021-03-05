@@ -73,8 +73,14 @@ def create_safe_spend_bundle_from_standard_coins(
         lock_amount]]))
     solution_reveal = solution_for_delegated_puzzle(create_coin_program,Program.to(0))
     burn_solution = Program.from_bytes(bytes.fromhex("ff80ffff0180ff8080"))
+    burn_solution_delegated_puzzle_hash = Program.from_bytes(bytes.fromhex("ff0180")).get_tree_hash()
 
-    sig = AugSchemeMPL.sign(synthetic_sk, bytes(create_coin_program.get_tree_hash()) + coin_names[0])
+    safe_creation_sig = AugSchemeMPL.sign(synthetic_sk, bytes(create_coin_program.get_tree_hash()) + coin_names[0])
+    signatures = [safe_creation_sig]
+    if len(coin_names) > 1:
+        for coin_name in coin_names[1:]:
+            signatures.append(AugSchemeMPL.sign(synthetic_sk, bytes(burn_solution_delegated_puzzle_hash) + coin_name))
+    sig = AugSchemeMPL.aggregate(signatures)
 
     spend_bundle = {"aggregated_signature": str(sig)}
     coin_solutions = []
@@ -87,7 +93,7 @@ def create_safe_spend_bundle_from_standard_coins(
                 "amount": coin.amount
             },
             "puzzle_reveal": str(puzzle_reveal),
-            "solution": str(solution_reveal) if first_coin else burn_solution
+            "solution": str(solution_reveal) if first_coin else str(burn_solution)
         }
         coin_solutions.append(coin_solution)
         first_coin = False
@@ -164,7 +170,7 @@ def create_claim_spend_bundle(
 #     print(int.from_bytes(items[1],"big"))
 
 #Test the creation of a "safe"
-# result = create_safe_spend_bundle_from_standard_coins(
+# create_safe_spend_bundle_from_standard_coins(
 #     [
 #         #Fill in custom info or just replace with a Coin obj
 #         Coin.from_json_dict({
