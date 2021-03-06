@@ -31,6 +31,7 @@ from src.types.blockchain_format.program import Program
 from src.types.spend_bundle import SpendBundle
 from src.types.blockchain_format.sized_bytes import bytes32
 from src.types.blockchain_format.coin import Coin
+from src.types.condition_opcodes import ConditionOpcode
 
 from src.wallet.puzzles.p2_delegated_puzzle_or_hidden_puzzle import solution_for_delegated_puzzle, puzzle_for_synthetic_public_key
 
@@ -68,7 +69,7 @@ def create_safe_spend_bundle_from_standard_coins(
         coin_names.append(coin.name())
 
     puzzle_reveal = puzzle_for_synthetic_public_key(synthetic_sk.get_g1())
-    create_coin_program = Program.to((1,[[51,
+    create_coin_program = Program.to((1,[[ConditionOpcode.CREATE_COIN,
         get_safe_transaction_puzzle_hash(source_pubkey,target_pubkey,claim_height,preimage_hash),
         lock_amount]]))
     solution_reveal = solution_for_delegated_puzzle(create_coin_program,Program.to(0))
@@ -130,7 +131,6 @@ def create_claim_spend_bundle(
 
 # Setup
 # from src.util.condition_tools import parse_sexp_to_conditions
-# from src.types.condition_opcodes import ConditionOpcode
 # from src.wallet.puzzles.p2_delegated_puzzle_or_hidden_puzzle import calculate_synthetic_secret_key
 # from src.wallet.derive_keys import master_sk_to_wallet_sk
 #
@@ -143,7 +143,7 @@ def create_claim_spend_bundle(
 # print(safe_puzzle.get_tree_hash())
 
 #Test opcodes for source claim back
-# source_solution = generate_safe_solution("",0,Program.to((1,[[51,0x4,50]])),Program.to(0))
+# source_solution = generate_safe_solution("",0,Program.to((1,[[ConditionOpcode.CREATE_COIN,0x4,50]])),Program.to(0))
 # cost, result = safe_puzzle.run_with_cost(source_solution)
 # for sexp in result.as_iter():
 #     items = sexp.as_python()
@@ -152,7 +152,7 @@ def create_claim_spend_bundle(
 #     print(int.from_bytes(items[1],"big"))
 
 #Test opcodes for target with correct preimage
-# target_correct_solution = generate_safe_solution("preimage",1,Program.to((1,[[51,0x4,50]])),Program.to(0))
+# target_correct_solution = generate_safe_solution("preimage",1,Program.to((1,[[ConditionOpcode.CREATE_COIN,0x4,50]])),Program.to(0))
 # cost, result = safe_puzzle.run_with_cost(target_correct_solution)
 # for sexp in result.as_iter():
 #     items = sexp.as_python()
@@ -161,7 +161,7 @@ def create_claim_spend_bundle(
 #     print(int.from_bytes(items[1],"big"))
 
 #Test exception with incorrect preimage
-# target_incorrect_solution = generate_safe_solution("incorrect",1,Program.to((1,[[51,0x4,50]])),Program.to(0))
+# target_incorrect_solution = generate_safe_solution("incorrect",1,Program.to((1,[[ConditionOpcode.CREATE_COIN,0x4,50]])),Program.to(0))
 # cost, result = safe_puzzle.run_with_cost(target_incorrect_solution)
 # for sexp in result.as_iter():
 #     items = sexp.as_python()
@@ -203,15 +203,15 @@ def create_claim_spend_bundle(
 #         bytes.fromhex("107661134F21FC7C02223D50AB9EB3600BC3FFC3712423A1E47BB1F9A9DBF55F") #hash of the string 'preimage'
 #     ),
 #     generate_safe_solution(
-#         "",
-#         0,
-#         Program.to((1,[[51,
+#         "", #replace with preimage if you are attempting to claim this with a preimage (as the "target")
+#         0, #replace with 1 if you are attempting to claim this with a preimage (as the "target")
+#         Program.to((1,[[ConditionOpcode.CREATE_COIN,
 #             bytes.fromhex("0xdelegatedpuzzlehash"),
 #             10000000000000]])), #replace with desired amount to claim
 #         Program.to(0)
 #     ),
 #     #This just gets the hash of the program that was passed in to generate_safe_solution above because you have to sign it
-#     Program.to((1,[[51,
+#     Program.to((1,[[ConditionOpcode.CREATE_COIN,
 #         bytes.fromhex("0xdelegatedpuzzlehash"),
 #         10000000000000]])).get_tree_hash(),
 # )
