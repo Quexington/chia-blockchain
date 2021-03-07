@@ -63,9 +63,9 @@ def get_safe_transaction_puzzle_hash(
 # target == 0 will act as though this is the source attempting to claim it back,
 # all other values will require a valid preimage
 def generate_safe_solution(
-    preimage: bytes32, target: int, delegated_puzzle: Program, delegated_solution: Program
+    preimage: bytes32, target: int, original_pubkey: G1Element, delegated_puzzle: Program, delegated_solution: Program
 ) -> Program:
-    return Program.to([preimage, target, delegated_puzzle, delegated_solution])
+    return Program.to([preimage, target, original_pubkey, delegated_puzzle, delegated_solution])
 
 
 def get_preimage_from_claim_solution(solution: Program) -> str:
@@ -167,7 +167,7 @@ def create_claim_spend_bundle(
 # print(safe_puzzle.get_tree_hash())
 
 # Test opcodes for source claim back
-# source_solution = generate_safe_solution("",0,Program.to((1,[[ConditionOpcode.CREATE_COIN,0x4,50]])),Program.to(0))
+# source_solution = generate_safe_solution("",0,0,Program.to((1,[[ConditionOpcode.CREATE_COIN,0x4,50]])),Program.to(0))
 # cost, result = safe_puzzle.run_with_cost(source_solution)
 # for sexp in result.as_iter():
 #     items = sexp.as_python()
@@ -179,6 +179,7 @@ def create_claim_spend_bundle(
 # target_correct_solution = generate_safe_solution(
 #         "preimage",
 #         1,
+#         0,
 #         Program.to((1,[[ConditionOpcode.CREATE_COIN,0x4,50]])),
 #         Program.to(0)
 #     )
@@ -193,6 +194,7 @@ def create_claim_spend_bundle(
 # target_incorrect_solution = generate_safe_solution(
 #         "incorrect",
 #         1,
+#         0,
 #         Program.to((1,[[ConditionOpcode.CREATE_COIN,0x4,50]])),
 #         Program.to(0)
 #     )
@@ -242,6 +244,7 @@ def create_claim_spend_bundle(
 #     generate_safe_solution(
 #         "", #replace with preimage if you are attempting to claim this with a preimage (as the "target")
 #         0, #replace with 1 if you are attempting to claim this with a preimage (as the "target")
+#         0,
 #         Program.to((1,[[ConditionOpcode.CREATE_COIN,
 #             bytes.fromhex("0xdelegatedpuzzlehash"),
 #             10000000000000]])), #replace with desired amount to claim
@@ -251,4 +254,31 @@ def create_claim_spend_bundle(
 #     Program.to((1,[[ConditionOpcode.CREATE_COIN,
 #         bytes.fromhex("0xdelegatedpuzzlehash"),
 #         10000000000000]])).get_tree_hash(),
+# )
+
+# Test claiming funds from a safe (taproot) (should 'FAIL: = takes exactly 2 arguments')
+# Only works if the claim pubkey is a synthetic one generated with DEFAULT_HIDDEN_PUZZLE
+# create_claim_spend_bundle(
+#     #Fill in custom info or just replace with a Coin obj
+#     Coin.from_json_dict({
+#         "amount" : "10500000000000",
+#         "parent_coin_info" : "0xpci",
+#         "puzzle_hash" : "0xatomicsafepuzzlehash"
+#     }),
+#     master_sk_to_wallet_sk(PrivateKey.from_bytes(bytes.fromhex("0xmastersk")),0),
+#     generate_safe_puzzle(
+#         G1Element.from_bytes(bytes.fromhex("0xsourcepubkey")),
+#         G1Element.from_bytes(bytes.fromhex("0xtargetpubkey")),
+#         6000, #replace with desired claim height
+#         bytes.fromhex("107661134F21FC7C02223D50AB9EB3600BC3FFC3712423A1E47BB1F9A9DBF55F") #hash of string 'preimage'
+#     ),
+#     generate_safe_solution(
+#         "", #replace with preimage if you are attempting to claim this with a preimage (as the "target")
+#         0, #replace with 1 if you are attempting to claim this with a preimage (as the "target")
+#         G1Element.from_bytes(bytes.fromhex("0xorigpubkey")), #replace with orig pubkey used to create synthetic pubkey
+#         DEFAULT_HIDDEN_PUZZLE,
+#         Program.to(0)
+#     ),
+#     #This gets the hash of the program that was passed in to generate_safe_solution above for signing
+#     DEFAULT_HIDDEN_PUZZLE_HASH,
 # )

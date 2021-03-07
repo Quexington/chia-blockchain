@@ -5,6 +5,7 @@
        preimage_hash ;;curried into puzzle, the hash to check the preimage against
        preimage      ;;the preimage for the target to claim the funds
        claim_option  ;;0 means that this is the source claiming it back, 1 means the target will supply a preimage
+       original_pubkey ;;0 means the claimer would like to just sign, any pubkey means that it will try to derive the claimer's synthetic pubkey and if it matches will run the delegated program
        delegated_puzzle ;;used to generate the conditions for the spend
        delegated_solution ;;solution for the delegated puzzle
     )
@@ -26,26 +27,42 @@
         )
     )
 
+    (defun-inline is_hidden_puzzle_correct (sig_pubkey original_pubkey delegated_puzzle)
+      (=
+          sig_pubkey
+          (point_add
+              original_pubkey
+              (pubkey_for_exp (sha256 original_pubkey (sha256tree1 delegated_puzzle)))
+          )
+      )
+    )
+
     (defun prepend_timelock (claim_time conditions)
       (c (list ASSERT_HEIGHT_NOW_EXCEEDS claim_time) conditions)
     )
 
-    (defun prepend_sig_condition (sig_pubkey delegated_puzzle conditions)
-      (c (list AGG_SIG_ME sig_pubkey (sha256tree1 delegated_puzzle)) conditions)
-    )
-
-    (defun spend_as_target (target_pubkey preimage preimage_hash delegated_puzzle conditions)
-      (assert (= (sha256 preimage) preimage_hash)
-        (prepend_sig_condition target_pubkey delegated_puzzle conditions)
+    (defun possibly_prepend_sig_condition (sig_pubkey original_pubkey delegated_puzzle conditions)
+      (if original_pubkey
+        (assert
+            (is_hidden_puzzle_correct sig_pubkey original_pubkey delegated_puzzle)
+            conditions
+        )
+        (c (list AGG_SIG_ME sig_pubkey (sha256tree1 delegated_puzzle)) conditions)
       )
     )
 
-    (defun spend_as_source (claim_time source_pubkey delegated_puzzle conditions)
-      (prepend_timelock claim_time (prepend_sig_condition source_pubkey delegated_puzzle conditions))
+    (defun spend_as_target (target_pubkey preimage preimage_hash original_pubkey delegated_puzzle conditions)
+      (assert (= (sha256 preimage) preimage_hash)
+        (possibly_prepend_sig_condition target_pubkey original_pubkey delegated_puzzle conditions)
+      )
+    )
+
+    (defun spend_as_source (claim_time source_pubkey original_pubkey delegated_puzzle conditions)
+      (prepend_timelock claim_time (possibly_prepend_sig_condition source_pubkey original_pubkey delegated_puzzle conditions))
     )
 
     (if claim_option
-      (spend_as_target target_pubkey preimage preimage_hash delegated_puzzle (a delegated_puzzle delegated_solution))
-      (spend_as_source claim_time source_pubkey delegated_puzzle (a delegated_puzzle delegated_solution))
+      (spend_as_target target_pubkey preimage preimage_hash original_pubkey delegated_puzzle (a delegated_puzzle delegated_solution))
+      (spend_as_source claim_time source_pubkey original_pubkey delegated_puzzle (a delegated_puzzle delegated_solution))
     )
 )
