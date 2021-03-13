@@ -251,6 +251,11 @@ class MempoolManager:
 
         if addition_amount > removal_amount:
             print(addition_amount, removal_amount)
+            f = open("debugloggy.log", "a")
+            f.write(addition_amount)
+            f.write(removal_amount)
+            f.write(quexington_spend)
+            f.close()
             return None, MempoolInclusionStatus.FAILED, Err.MINTING_COIN
 
         fees = removal_amount - addition_amount
