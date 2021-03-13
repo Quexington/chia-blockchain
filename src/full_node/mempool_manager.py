@@ -16,6 +16,7 @@ from src.full_node.bundle_tools import best_solution_program
 from src.full_node.coin_store import CoinStore
 from src.full_node.mempool import Mempool
 from src.full_node.mempool_check_conditions import mempool_check_conditions_dict
+from src.full_node.spend_filterer import filter_spend
 from src.types.blockchain_format.coin import Coin
 from src.types.blockchain_format.sized_bytes import bytes32
 from src.types.coin_record import CoinRecord
@@ -168,6 +169,7 @@ class MempoolManager:
         spend_name: bytes32,
         validate_signature=True,
     ) -> Tuple[Optional[uint64], MempoolInclusionStatus, Optional[Err]]:
+        filtered_spend, filter_name = filter_spend(new_spend, spend_name)
         """
         Tries to add spendbundle to either self.mempools or to_pool if it's specified.
         Returns true if it's added in any of pools, Returns error if it fails.
