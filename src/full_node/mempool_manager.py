@@ -169,7 +169,7 @@ class MempoolManager:
         spend_name: bytes32,
         validate_signature=True,
     ) -> Tuple[Optional[uint64], MempoolInclusionStatus, Optional[Err]]:
-        filtered_spend, filter_name = filter_spend(new_spend, spend_name)
+        quexington_spend, quexington_name = filter_spend(new_spend, spend_name)
         """
         Tries to add spendbundle to either self.mempools or to_pool if it's specified.
         Returns true if it's added in any of pools, Returns error if it fails.
@@ -189,7 +189,7 @@ class MempoolManager:
         if cost_result.error is not None:
             return None, MempoolInclusionStatus.FAILED, Err(cost_result.error)
         # build removal list
-        removal_names: List[bytes32] = new_spend.removal_names()
+        removal_names: List[bytes32] = quexington_spend.removal_names()
 
         additions = additions_for_npc(npc_list)
 
@@ -218,7 +218,7 @@ class MempoolManager:
             if v > 1:
                 return None, MempoolInclusionStatus.FAILED, Err.DOUBLE_SPEND
         # Skip if already added
-        if spend_name in self.mempool.spends:
+        if quexington_name in self.mempool.spends:
             return uint64(cost), MempoolInclusionStatus.SUCCESS, None
 
         removal_record_dict: Dict[bytes32, CoinRecord] = {}
@@ -291,7 +291,7 @@ class MempoolManager:
                 conflicting_pool_items[sb.name] = sb
             for item in conflicting_pool_items.values():
                 if item.fee_per_cost >= fees_per_cost:
-                    self.add_to_potential_tx_set(new_spend, spend_name, cost_result)
+                    self.add_to_potential_tx_set(quexington_spend, quexington_name, cost_result)
                     return (
                         uint64(cost),
                         MempoolInclusionStatus.PENDING,
@@ -319,11 +319,11 @@ class MempoolManager:
             chialisp_height = (
                 self.peak.prev_transaction_block_height if not self.peak.is_transaction_block else self.peak.height
             )
-            error = mempool_check_conditions_dict(coin_record, new_spend, npc.condition_dict, uint32(chialisp_height))
+            error = mempool_check_conditions_dict(coin_record, quexington_spend, npc.condition_dict, uint32(chialisp_height))
 
             if error:
                 if error is Err.ASSERT_HEIGHT_NOW_EXCEEDS_FAILED or error is Err.ASSERT_HEIGHT_AGE_EXCEEDS_FAILED:
-                    self.add_to_potential_tx_set(new_spend, spend_name, cost_result)
+                    self.add_to_potential_tx_set(quexington_spend, quexington_name, cost_result)
                     return uint64(cost), MempoolInclusionStatus.PENDING, error
                 break
 
@@ -336,8 +336,8 @@ class MempoolManager:
 
         if validate_signature:
             # Verify aggregated signature
-            if not AugSchemeMPL.aggregate_verify(pks, msgs, new_spend.aggregated_signature):
-                log.warning(f"Aggsig validation error {pks} {msgs} {new_spend}")
+            if not AugSchemeMPL.aggregate_verify(pks, msgs, quexington_spend.aggregated_signature):
+                log.warning(f"Aggsig validation error {pks} {msgs} {quexington_spend}")
                 return None, MempoolInclusionStatus.FAILED, Err.BAD_AGGREGATE_SIGNATURE
         # Remove all conflicting Coins and SpendBundles
         if fail_reason:
@@ -346,7 +346,7 @@ class MempoolManager:
                 self.mempool.remove_spend(mempool_item)
 
         removals: List[Coin] = [coin for coin in removal_coin_dict.values()]
-        new_item = MempoolItem(new_spend, uint64(fees), cost_result, spend_name, additions, removals)
+        new_item = MempoolItem(quexington_spend, uint64(fees), cost_result, quexington_name, additions, removals)
         self.mempool.add_to_pool(new_item, additions, removal_coin_dict)
         log.info(f"add_spendbundle took {time.time() - start_time} seconds")
         return uint64(cost), MempoolInclusionStatus.SUCCESS, None
