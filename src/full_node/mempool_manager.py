@@ -178,7 +178,8 @@ class MempoolManager:
         if self.peak is None:
             return None, MempoolInclusionStatus.FAILED, Err.MEMPOOL_NOT_INITIALIZED
 
-        npc_list = await pre_validate_spendbundle(quexington_spend).npc_list#cost_result.npc_list
+        temp = await self.pre_validate_spendbundle(quexington_spend)#cost_resul>
+        npc_list = temp.npc_list
         cost = cost_result.cost
 
         log.debug(f"Cost: {cost}")
@@ -251,11 +252,6 @@ class MempoolManager:
 
         if addition_amount > removal_amount:
             print(addition_amount, removal_amount)
-            f = open("/home/quexington/debugloggy.log", "a")
-            f.write(str(addition_amount))
-            f.write(str(removal_amount))
-            f.write(str(quexington_spend))
-            f.close()
             return None, MempoolInclusionStatus.FAILED, Err.MINTING_COIN
 
         fees = removal_amount - addition_amount
